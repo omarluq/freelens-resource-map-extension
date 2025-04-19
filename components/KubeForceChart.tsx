@@ -68,6 +68,8 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
   protected config = KubeForceChart.config;
   protected images: { [key: string]: HTMLImageElement } = {};
   private _clickTimeout: NodeJS.Timeout | null = null;
+  private _stabilizationTimeout: NodeJS.Timeout | null = null;
+  private _lastNetworkUpdate: number = 0;
 
   protected namespaceStore = Renderer.K8sApi.apiManager.getStore(
     Renderer.K8sApi.namespacesApi,
@@ -468,7 +470,11 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
         icon: undefined,
       };
 
-      // Use image shape for K8s resources
+      // Determine shape based on whether a valid image is available
+      const hasValidImage = typeof nodeConfig.icon === "string";
+      const shape = hasValidImage ? "circularImage" : "ellipse";
+      
+      // Use appropriate shape for K8s resources
       return {
         id: node.id,
         label: node.name,
@@ -480,9 +486,9 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
             border: node.color || nodeConfig.color || "#666",
           },
         },
-        shape: "circularImage", // Use circular image for icons
+        shape: shape,
         // Only use string URLs for vis-network images, React components are not supported here
-        image: typeof nodeConfig.icon === "string" ? nodeConfig.icon : undefined,
+        image: hasValidImage ? nodeConfig.icon as string : undefined,
         size: 25,
         font: {
           size: 14,
@@ -586,19 +592,23 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
         enabled: true, // Enable physics for initial positioning
         stabilization: {
           enabled: true,
-          iterations: 100,
+          iterations: 500, // More iterations for better initial stability
           updateInterval: 50,
           fit: true,
         },
         barnesHut: {
-          gravitationalConstant: -2000,
-          centralGravity: 0.1,
-          springLength: 100,
-          springConstant: 0.04,
-          damping: 0.09,
-          avoidOverlap: 0.5,
+          gravitationalConstant: -2000, // Good repulsion between nodes
+          centralGravity: 0.1, // Balanced central gravity
+          springLength: 120, // Good spring length for spacing
+          springConstant: 0.04, // Balanced spring stiffness
+          damping: 0.3, // Increased damping to reduce oscillations
+          avoidOverlap: 0.5, // Prevent node overlap
         },
         solver: "barnesHut",
+        timestep: 0.5, // Larger timestep for faster convergence
+        adaptiveTimestep: true, // Use adaptive time stepping
+        minVelocity: 1.0, // Higher threshold to settle nodes faster
+        maxVelocity: 30, // Limit maximum velocity
       },
       interaction: {
         hover: false, // Disable hover effects
@@ -631,7 +641,7 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
 
       // No need to track positions for SVG rendering
 
-      // Update stabilization options
+      // Update stabilization options and track zoom events
       this.network.setOptions({
         physics: {
           stabilization: {
@@ -643,12 +653,50 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
           },
         },
       });
+      
+      // Add zoom and pan handlers 
+      this.network.on("zoom", () => {
+        // Throttle updates by directly updating when network changes
+        if (this.network) {
+          const scale = this.network.getScale();
+          const position = this.network.getViewPosition();
+          console.log(`View updated: scale=${scale.toFixed(2)}, position=(${position.x.toFixed(0)},${position.y.toFixed(0)})`);
+        }
+      });
+      
+      this.network.on("dragEnd", () => {
+        // Update on drag end to capture final position
+        if (this.network) {
+          const position = this.network.getViewPosition();
+          console.log(`View updated: position=(${position.x.toFixed(0)},${position.y.toFixed(0)})`);
+        }
+      });
 
       // Let physics handle the initial layout
 
+      // Set safety timeout to disable physics if stabilization takes too long
+      if (this._stabilizationTimeout) {
+        clearTimeout(this._stabilizationTimeout);
+      }
+      
+      this._stabilizationTimeout = setTimeout(() => {
+        if (this.network) {
+          console.log("Stabilization safety timeout - fixing layout");
+          this.network.setOptions({ physics: { enabled: false } });
+          this.network.fit();
+        }
+      }, 5000);
+      
       // Stabilize once and disable physics
       this.network.once("stabilized", () => {
         console.log("Network stabilized");
+        
+        // Clear the safety timeout since we stabilized successfully
+        if (this._stabilizationTimeout) {
+          clearTimeout(this._stabilizationTimeout);
+          this._stabilizationTimeout = null;
+        }
+        
         // Disable physics after stabilization for a fixed layout
         this.network.setOptions({ physics: { enabled: false } });
       });
