@@ -18,7 +18,7 @@
     "build": "rm -rf ./dist && webpack",
     "clean": "rm -rf ./dist",
     "test": "jest",
-    "format": " pnpm biome format . --write",
+    "format": "pnpm biome format . --write",
     "lint": "pnpm biome lint . --apply"
   },
   "jest": {
