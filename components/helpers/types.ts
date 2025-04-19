@@ -1,7 +1,8 @@
-import { Renderer } from "@k8slens/extensions";
+import { Renderer } from "@freelensapp/extensions";
+import React from 'react';
 
 export type NodeObject = object & {
-  id?: string|number;
+  id?: string;
   x?: number;
   y?: number;
   z?: number;
@@ -14,17 +15,17 @@ export type NodeObject = object & {
 };
 
 export type LinkObject = object & {
-  source?: string|number|NodeObject;
-  target?: string|number|NodeObject;
+  source?: string|NodeObject;
+  target?: string|NodeObject;
 };
 
 export interface ChartDataSeries extends NodeObject {
-  id?: string|number;
+  id: string;
   object: Renderer.K8sApi.KubeObject;
   kind: string;
-  name?: string;
+  name: string;
   namespace?: string;
-  image?: HTMLImageElement;
+  icon?: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   value?: number;
   collapsed?: boolean;
   disabled?: boolean;

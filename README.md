@@ -1,21 +1,25 @@
-# Lens Resource Map
+# Freelens Resource Map Extension
 
-Lens Resource Map is an extension for [Lens - The Kubernetes IDE](https://k8slens.dev) that displays Kubernetes resources and their relations as a real-time force-directed graph.
+> [!WARNING]
+> This extension is currently in development and is considered unstable. The API is subject to change, and you may encounter bugs or incomplete features.
+> Use it at your own risk, and contribute by reporting issues or suggesting improvements!
 
-![](./images/Screenshot.png)
+A Freelens extension to visualize Kubernetes resources and their relations as an interactive graph.
 
-## Installation
+![Screenshot](./images/Screenshot.png)
 
-**Lens 5 and above:**
+## Features
 
-1. Install [Lens](https://k8slens.dev), if not installed.
-2. Switch to the Extensions view (`CMD+SHIFT+E` on macOS) on Lens.
-3. Enter `@nevalla/kube-resource-map` into the Install Extension box.
-4. Click on the Install button.
+- Interactive graph visualization of Kubernetes resources
+- Resource relationship mapping (pods, services, deployments, etc.)
+- Namespace filtering (in progress)
+- Visual indicators for resource status and health
+- Click navigation to resource details
 
-**Lens 4:**
-1. Install [Lens](https://k8slens.dev), if not installed.
-2. Download version [0.2.0](https://github.com/nevalla/lens-resource-map-extension/releases/download/v0.2.0/nevalla-kube-resource-map-0.2.0.tgz) tarball.
-3. Switch to the Extensions view (`CMD+SHIFT+E` on macOS) on Lens.
-4. Select tarball file from filesystem.
-5. Click on the Install button.
+## Credits
+
+This extension is a modernized fork of the [Kube Resource Map](https://github.com/nevalla/lens-resource-map-extension) extension originally created by [Lauri Nevala](https://github.com/nevalla).
+
+## License
+
+MIT License - see the [LICENSE](./LICENSE) file for details.

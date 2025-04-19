@@ -1,4 +1,4 @@
-import { Renderer, Common} from "@k8slens/extensions";
+import { Renderer, Common} from "@freelensapp/extensions";
 import React from "react";
 
 export interface StatefulsetTooltipProps {
@@ -39,7 +39,7 @@ export class StatefulsetTooltip extends React.Component<StatefulsetTooltipProps>
   }
 
   renderContainersStatus(pod: Renderer.K8sApi.Pod) {
-    return pod.getContainerStatuses().map(containerStatus => {
+    return pod.getContainerStatuses().map((containerStatus: { name: string; state: string; ready: boolean }) => {
       const { name, state, ready } = containerStatus;
 
       return (

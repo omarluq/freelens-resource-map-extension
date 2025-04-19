@@ -1,18 +1,16 @@
 import "./KubeForceChart.scss";
-import { Common, Renderer } from "@k8slens/extensions";
+import { Common, Renderer } from "@freelensapp/extensions";
 import { comparer, observable, reaction, values } from "mobx";
 import { disposeOnUnmount, observer } from "mobx-react";
 import React, { createRef, Fragment, MutableRefObject } from "react";
-import { ForceGraph2D} from 'react-force-graph';
+import { Network } from "vis-network";
+import { DataSet } from "vis-data";
 import * as d3 from "d3-force";
-import ReactDOM from "react-dom";
+import * as ReactDOM from "react-dom";
 import { PodTooltip, ServiceTooltip, DeploymentTooltip, StatefulsetTooltip, DefaultTooltip, IngressTooltip} from "./tooltips";
-import { config } from "./helpers/config";
+import { config, ConfigItem } from "./helpers/config";
 import { ChartDataSeries, LinkObject, NodeObject } from "./helpers/types";
-import { KubeObject } from "@k8slens/extensions/dist/src/renderer/api/kube-object";
-
-
-const d33d = require("d3-force-3d");
+import { KubeObject } from "@freelensapp/kube-object";
 
 export interface KubeResourceChartProps {
   id?: string; // html-id to bind chart
@@ -20,13 +18,33 @@ export interface KubeResourceChartProps {
 }
 
 interface State {
-  data: {
-    nodes: ChartDataSeries[];
-    links: LinkObject[];
-  };
+  nodes: ChartDataSeries[];
+  links: LinkObject[];
   highlightLinks?: Set<LinkObject>;
-  hoverNode?: NodeObject;
+  hoverNode?: string;
+  showTooltipForObject?: Renderer.K8sApi.KubeObject;
 }
+
+type VisNodeColor = {
+  background?: string;
+  border?: string;
+  highlight?: {
+    background?: string;
+    border?: string;
+  };
+};
+
+type VisEdgeColor = {
+  color?: string;
+  highlight?: string;
+};
+
+type VisEdgeSmooth = {
+  enabled: boolean;
+  type: string;
+  roundness: number;
+  forceDirection?: string | boolean;
+};
 
 @observer
 export class KubeResourceChart extends React.Component<KubeResourceChartProps, State> {
@@ -42,14 +60,11 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
   protected nodes: ChartDataSeries[] = [];
   protected highlightLinks: Set<LinkObject> = new Set<LinkObject>();
   protected initZoomDone = false;
-
-
   protected images: {[key: string]: HTMLImageElement; } = {}
   protected config = config;
   private chartRef: MutableRefObject<any>;
-  protected secretsData: any = [];
-  protected configMapsData: any = [];
-  protected helmData: any = [];
+  protected network: Network | null = null;
+  protected networkContainer = React.createRef<HTMLDivElement>();
 
   protected podsStore = Renderer.K8sApi.apiManager.getStore(Renderer.K8sApi.podsApi) as Renderer.K8sApi.PodsStore;
   protected deploymentStore = Renderer.K8sApi.apiManager.getStore(Renderer.K8sApi.deploymentApi) as Renderer.K8sApi.DeploymentStore;
@@ -63,14 +78,11 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
 
   protected kubeObjectStores: Renderer.K8sApi.KubeObjectStore[] = []
   private watchDisposers: Function[] = [];
-
   private disposers: Function[] = [];
 
   state: Readonly<State> = {
-    data: {
-      nodes: [],
-      links: []
-    },
+    nodes: [],
+    links: [],
     highlightLinks: new Set<LinkObject>()
   }
 
@@ -88,13 +100,13 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
     await this.loadData();
 
     this.displayChart();
-
-    const fg = this.chartRef.current;
-    //fg?.zoom(1.2, 1000);
-    fg?.d3Force('link').strength(2).distance(() => 60)
-    fg?.d3Force('charge', d33d.forceManyBody().strength(-60).distanceMax(250));
-    fg?.d3Force('collide', d3.forceCollide(40));
-    fg?.d3Force("center", d3.forceCenter());
+    
+    // Initialize network visualization after data is loaded
+    setTimeout(() => {
+      if (KubeResourceChart.isReady && this.nodes.length > 0) {
+        this.updateNetwork();
+      }
+    }, 100);
 
     const reactionOpts = {
       equals: comparer.structural,
@@ -108,6 +120,13 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
     this.disposers.push(reaction(() => this.props.object, (value, prev, _reaction) => { value.getId() !== prev.getId() ? this.displayChart() : this.refreshChart() }));
     this.disposers.push(reaction(() => this.podsStore.items.toJSON(), (values, previousValue, _reaction) => { this.refreshItems(values, previousValue) }, reactionOpts));
     this.disposers.push(reaction(() => store.items.toJSON(), (values, previousValue, _reaction) => { this.refreshItems(values, previousValue) }, reactionOpts));
+  }
+
+  componentDidUpdate() {
+    // Only create or update the network if we have nodes to display
+    if (KubeResourceChart.isReady && this.nodes.length > 0) {
+      this.updateNetwork();
+    }
   }
 
   registerStores() {
@@ -136,34 +155,77 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
     this.nodes = [];
     this.links = [];
     this.generateChartDataSeries();
+    this.setState({ 
+      nodes: this.nodes,
+      links: this.links
+    });
   }
 
   refreshChart = () => {
     console.log("refreshChart");
     this.generateChartDataSeries();
+    this.setState({ 
+      nodes: this.nodes,
+      links: this.links
+    });
   }
 
   getLinksForNode(node: ChartDataSeries): LinkObject[] {
-    return this.links.filter((link) => link.source == node.id || link.target == node.id || (link.source as NodeObject).id == node.id || (link.target as NodeObject).id == node.id )
+    return this.links.filter((link) => link.source == node.id || link.target == node.id || (link.source as NodeObject).id == node.id || (link.target as NodeObject).id == node.id )
   }
 
-  handleNodeHover(node: ChartDataSeries) {
-    const highlightLinks = new Set<LinkObject>();
-    const elem = document.getElementById(this.props.id);
-    elem.style.cursor = node ? 'pointer' : null;
-    if (node) {
-      const links = this.getLinksForNode(node);
-      links.forEach(link => highlightLinks.add(link));
+  handleNodeClick = (params: any) => {
+    if (params.nodes && params.nodes.length > 0) {
+      const nodeId = params.nodes[0];
+      const node = this.nodes.find(n => n.id === nodeId);
+      
+      if (node && node.object) {
+        if (node.object.kind == "HelmRelease") {
+          const path = `/apps/releases/${node.object.getNs()}/${node.object.getName()}?`;
+          Renderer.Navigation.navigate(path);
+        } else {
+          const detailsUrl = Renderer.Navigation.getDetailsUrl(node.object.selfLink);
+          Renderer.Navigation.navigate(detailsUrl);
+        }
+      }
     }
-    this.setState({ highlightLinks, hoverNode: node})
-  }
+  };
 
+  handleNodeHover = (params: any) => {
+    if (params.node) {
+      const nodeId = params.node;
+      const elem = document.getElementById(this.props.id);
+      if (elem) elem.style.cursor = 'pointer';
+      
+      const node = this.nodes.find(n => n.id === nodeId);
+      
+      if (node) {
+        const highlightLinks = new Set<LinkObject>();
+        const links = this.getLinksForNode(node);
+        links.forEach(link => highlightLinks.add(link));
+        
+        this.setState({
+          highlightLinks,
+          hoverNode: nodeId,
+          showTooltipForObject: node.object
+        });
+      }
+    } else {
+      const elem = document.getElementById(this.props.id);
+      if (elem) elem.style.cursor = null;
+      
+      this.setState({
+        highlightLinks: new Set<LinkObject>(),
+        hoverNode: undefined,
+        showTooltipForObject: undefined
+      });
+    }
+  };
+
+  // SVG icons are now imported as React components
+  // No need to preload images
   generateImages() {
-    Object.entries(this.config).forEach(value => {
-      const img = new Image();
-      img.src = value[1].icon;
-      this.config[value[0]].img = img;
-    })
+    // This method is kept for compatibility but does nothing now
   }
 
   componentWillUnmount() {
@@ -171,6 +233,12 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
     this.nodes = [];
     this.links = [];
     this.unsubscribeStores();
+
+    // Clean up the network
+    if (this.network) {
+      this.network.destroy();
+      this.network = null;
+    }
 
     this.disposers.forEach((disposer) => disposer())
   }
@@ -217,26 +285,203 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
   }
 
   generateChartDataSeries = () => {
-    const nodes = [...this.nodes];
-    const links = [...this.links];
+    const oldNodes = [...this.nodes];
+    const oldLinks = [...this.links];
 
     this.generateControllerNode(this.props.object);
     this.generateIngresses();
 
-    if (nodes.length != this.nodes.length || links.length != this.links.length) { // TODO: Improve the logic
-      console.log("updateState")
+    // Only update state if the data has changed
+    if (oldNodes.length != this.nodes.length || oldLinks.length != this.links.length) {
       this.updateState(this.nodes, this.links);
     }
   }
-
+  
   protected updateState(nodes: ChartDataSeries[], links: LinkObject[]) {
     this.setState({
-      data: {
-        nodes: nodes,
-        links: links,
+      nodes: nodes,
+      links: links
+    });
+  }
+
+  updateNetwork() {
+    const container = document.getElementById(`${this.props.id}-network`);
+    if (!container) return;
+
+    const theme = Renderer.Theme.getActiveTheme();
+    const sidebarWidth = (document.querySelectorAll('[data-testid="cluster-sidebar"]')[0] as HTMLElement)?.offsetWidth || 200;
+    const graphWidth = window.innerWidth - 70 - sidebarWidth;
+    const graphHeight = 400;
+
+    // Destroy existing network if any
+    if (this.network) {
+      this.network.destroy();
+      this.network = null;
+    }
+
+    // Convert the nodes and links to vis-network format
+    const visNodes = this.nodes.map(node => {
+      const kind = node.kind.toLowerCase();
+      const nodeConfig = this.config[kind] || {};
+      
+      return {
+        id: node.id,
+        label: node.name,
+        color: {
+          background: node.color || (nodeConfig as ConfigItem).color || '#666',
+          border: node.color || (nodeConfig as ConfigItem).color || '#666',
+          highlight: {
+            background: '#eee',
+            border: node.color || (nodeConfig as ConfigItem).color || '#666'
+          }
+        },
+        // Use circle shape for all nodes since we'll render SVGs separately
+        shape: 'circle',
+        image: null, // Explicitly set to null to avoid loading attempts
+        size: 25,
+        font: {
+          size: 14,
+          color: '#333',
+          face: 'Roboto, Arial, Helvetica, sans-serif',
+          strokeWidth: 2,
+          strokeColor: '#fff'
+        },
+        borderWidth: 2,
+        shadow: true,
+        objectData: node
+      };
+    });
+
+    const visEdges = this.links.map((link, index) => {
+      const sourceNode = this.nodes.find(n => n.id === link.source) || { color: '#999' };
+      const sourceId = typeof link.source === 'string' ? link.source : String(link.source);
+      const targetId = typeof link.target === 'string' ? link.target : String(link.target);
+      
+      return {
+        from: sourceId,
+        to: targetId,
+        id: `edge-${index}`,
+        color: {
+          color: sourceNode.color || '#999',
+          highlight: '#ff0'
+        },
+        width: 1,
+        smooth: { 
+          enabled: true,
+          type: 'continuous',
+          roundness: 0.5,
+          forceDirection: 'none'
+        }
+      };
+    });
+
+    // Create vis-network data sets
+    const nodes = new DataSet(visNodes);
+    const edges = new DataSet(visEdges);
+
+    // Define network options
+    const options = {
+      autoResize: true,
+      height: `${graphHeight}px`,
+      width: `${graphWidth}px`,
+      nodes: {
+        shape: 'circle',
+        // Don't use images in vis-network at all
+        imagePadding: 0,  // No image padding needed
+        image: null,      // No images
+        shapeProperties: {
+          useBorderWithImage: false  // Don't try to use borders with images
+        },
+        size: 25,
+        font: {
+          size: 14,
+          color: '#333',
+          face: 'Roboto, Arial, Helvetica, sans-serif',
+          strokeWidth: 2,
+          strokeColor: '#fff'
+        },
+        borderWidth: 2,
+        shadow: {
+          enabled: true,
+          color: 'rgba(0,0,0,0.2)',
+          size: 5
+        }
       },
-      highlightLinks: new Set<LinkObject>()
-    })
+      edges: {
+        color: {
+          color: '#cbd2d9',
+          highlight: '#2185d0'
+        },
+        width: 2,
+        smooth: {
+          enabled: true,
+          type: 'continuous',
+          roundness: 0.5,
+          forceDirection: 'none'
+        },
+        arrows: {
+          to: { enabled: true, scaleFactor: 0.5 }
+        }
+      },
+      physics: {
+        enabled: true,
+        stabilization: {
+          enabled: true,
+          iterations: 1000,
+          updateInterval: 50,
+          fit: true
+        },
+        barnesHut: {
+          gravitationalConstant: -1000,
+          centralGravity: 0.3,
+          springLength: 95,
+          springConstant: 0.04,
+          damping: 0.09,
+          avoidOverlap: 0.1
+        },
+        minVelocity: 0.75,
+        maxVelocity: 30,
+        solver: 'barnesHut',
+        timestep: 0.3,
+        adaptiveTimestep: true
+      },
+      interaction: {
+        hover: true,
+        tooltipDelay: 200,
+        hideEdgesOnDrag: false,
+        navigationButtons: false,
+        keyboard: {
+          enabled: true,
+          bindToWindow: false
+        },
+        zoomView: true
+      },
+      layout: {
+        improvedLayout: true,
+        hierarchical: {
+          enabled: false
+        }
+      }
+    };
+
+    // Create the network instance
+    try {
+      this.network = new Network(container, { nodes, edges }, options);
+      
+      // Add event listeners
+      this.network.on('click', this.handleNodeClick);
+      this.network.on('hoverNode', this.handleNodeHover);
+      this.network.on('blurNode', this.handleNodeHover);
+
+      // Initial fit
+      setTimeout(() => {
+        if (this.network) {
+          this.network.fit();
+        }
+      }, 500);
+    } catch (error) {
+      console.error("Error creating vis-network:", error);
+    }
   }
 
   protected generateControllerNode(object: KubeObject) {
@@ -255,20 +500,17 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
 
   protected getDeploymentPods(deployment: Renderer.K8sApi.Deployment) {
     const { deploymentStore } = this;
-
-    return deploymentStore.getChildPods(deployment)
+    return deploymentStore.getChildPods(deployment);
   }
 
   protected getDaemonSetPods(daemonset: Renderer.K8sApi.DaemonSet) {
     const { daemonsetStore } = this;
-
-    return daemonsetStore.getChildPods(daemonset)
+    return daemonsetStore.getChildPods(daemonset);
   }
 
   protected getStatefulSetPods(statefulset: Renderer.K8sApi.StatefulSet) {
     const { statefulsetStore } = this;
-
-    return statefulsetStore.getChildPods(statefulset)
+    return statefulsetStore.getChildPods(statefulset);
   }
 
   protected generateIngresses() {
@@ -279,7 +521,7 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
 
       ingress.spec.rules?.forEach((rule) => {
         rule.http.paths.forEach((path) => {
-          const serviceName = (path.backend as any).serviceName || (path.backend as any).service.name
+          const serviceName = (path.backend as any).serviceName || (path.backend as any).service.name;
           if (serviceName) {
             const serviceNode = this.nodes.filter(node => node.kind === "Service").find(node => node.object.getName() === serviceName);
 
@@ -290,9 +532,9 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
               this.addLink({ source: ingressNode.id, target: serviceNode.id });
             }
           }
-        })
-      })
-    })
+        });
+      });
+    });
   }
 
   protected generateServices(deploymentPods: Renderer.K8sApi.Pod[]) {
@@ -303,28 +545,27 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
       if (selector) {
         const pods = deploymentPods.filter((item: Renderer.K8sApi.Pod) => {
           const itemLabels = item.metadata.labels || {};
-          let matches = item.getNs() == service.getNs()
+          let matches = item.getNs() == service.getNs();
           if (matches) {
             matches = Object.entries(selector)
               .every(([key, value]) => {
-                return itemLabels[key] === value
+                return itemLabels[key] === value;
               });
           }
-          return matches
+          return matches;
         });
         if (pods.length) {
           const serviceNode = this.generateNode(service);
           pods.forEach((pod: Renderer.K8sApi.Pod) => {
-            const podNode = this.findNode(pod)
+            const podNode = this.findNode(pod);
             if (podNode) {
-              const serviceLink = { source: podNode.id, target: serviceNode.id}
+              const serviceLink = { source: podNode.id, target: serviceNode.id};
               this.addLink(serviceLink);
             }
-          })
+          });
         }
       }
-    })
-
+    });
   }
 
   protected addLink(link: LinkObject) {
@@ -336,14 +577,15 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
   }
 
   protected findLink(link: LinkObject) {
-    return this.links.find(existingLink => (existingLink.source === link.source || (existingLink.source as NodeObject).id === link.source) && (existingLink.target === link.target || (existingLink.target as NodeObject).id === link.target))
+    return this.links.find(existingLink => (existingLink.source === link.source || (existingLink.source as NodeObject).id === link.source) && (existingLink.target === link.target || (existingLink.target as NodeObject).id === link.target));
   }
+  
   protected findNode(object: Renderer.K8sApi.KubeObject) {
     if (!object) {
       return null;
     }
 
-    return this.nodes.find(node => node.kind == object.kind && node.namespace && object.getNs() && node.name == object.getName())
+    return this.nodes.find(node => node.kind == object.kind && node.namespace && object.getNs() && node.name == object.getName());
   }
 
   protected deleteNode(opts: {node?: ChartDataSeries; object?: Renderer.K8sApi.KubeObject}) {
@@ -355,7 +597,7 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
 
     this.getLinksForNode(node).forEach(link => {
       this.links.splice(this.links.indexOf(link), 1);
-    })
+    });
 
     this.nodes.splice(this.nodes.indexOf(node), 1);
   }
@@ -367,8 +609,9 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
       return existingNode;
     }
 
-    const id = `${object.kind}-${object.getName()}`
-    const { color, img, size } = this.config[object.kind.toLowerCase()]
+    const id = `${object.kind}-${object.getName()}`;
+    const kind = object.kind.toLowerCase();
+    const nodeConfig = (this.config[kind] as ConfigItem) || { color: '#999', size: 5, icon: undefined };
 
     const chartNode: ChartDataSeries = {
       id: id,
@@ -376,13 +619,13 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
       kind: object.kind,
       name: object.getName(),
       namespace: object.getNs(),
-      value: size,
-      color: color,
-      image: img,
+      value: nodeConfig.size,
+      color: nodeConfig.color,
+      icon: nodeConfig.icon,
       visible: true
-    }
+    };
 
-    this.nodes.push(chartNode)
+    this.nodes.push(chartNode);
 
     return chartNode;
   }
@@ -392,25 +635,25 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
     controllerNode.object = object;
     pods.forEach((pod: Renderer.K8sApi.Pod) => {
       const podNode = this.getPodNode(pod, podLinks);
-      this.addLink({ source: controllerNode.id, target: podNode.id})
-    })
+      this.addLink({ source: controllerNode.id, target: podNode.id});
+    });
     const releaseName = this.getHelmReleaseName(object);
 
     if (releaseName) {
-      const release = this.getHelmReleaseChartNode(releaseName, object.getNs())
-      this.addLink({target: release.id, source: controllerNode.id})
+      const release = this.getHelmReleaseChartNode(releaseName, object.getNs());
+      this.addLink({target: release.id, source: controllerNode.id});
     }
-    return controllerNode
+    return controllerNode;
   }
 
   getHelmReleaseName(object: Renderer.K8sApi.KubeObject): string {
     if (object.metadata?.labels?.heritage === "Helm" && object.metadata?.labels?.release) {
-      return object.metadata.labels.release
+      return object.metadata.labels.release;
     }
     if (object.metadata?.labels && object.metadata?.annotations && object.metadata?.labels["app.kubernetes.io/managed-by"] == "Helm" && object.metadata?.annotations["meta.helm.sh/release-name"]) {
-      return object.metadata.annotations["meta.helm.sh/release-name"]
+      return object.metadata.annotations["meta.helm.sh/release-name"];
     }
-    return null
+    return null;
   }
 
   getIngressNode(ingress: Renderer.K8sApi.Ingress) {
@@ -419,14 +662,14 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
     ingress.spec.tls?.filter(tls => tls.secretName).forEach((tls) => {
       const secret = this.secretStore.getByName(tls.secretName, ingress.getNs());
       if (secret) {
-        const secretNode = this.generateNode(secret)
+        const secretNode = this.generateNode(secret);
         if (secretNode) {
-          this.addLink({ source: ingressNode.id, target: secretNode.id })
+          this.addLink({ source: ingressNode.id, target: secretNode.id });
         }
       }
     });
 
-    return ingressNode
+    return ingressNode;
   }
 
   getPodNode(pod: Renderer.K8sApi.Pod, links = true): ChartDataSeries {
@@ -439,10 +682,10 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
       podNode.color = "#9dabb5";
     }
     else if (["Pending", "ContainerCreating"].includes(pod.getStatusMessage())) {
-      podNode.color = "#2F4F4F" // #ff9800"
+      podNode.color = "#2F4F4F"; // #ff9800"
     }
     else if (["CrashLoopBackOff", "Failed", "Error"].includes(pod.getStatusMessage())) {
-      podNode.color = "#ce3933"
+      podNode.color = "#ce3933";
     }
 
     if (!links) {
@@ -455,13 +698,13 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
         if (secretName) {
           const secret = this.secretStore.getByName(secretName, pod.getNs());
           if (secret) {
-            const secretNode = this.generateNode(secret)
+            const secretNode = this.generateNode(secret);
             this.addLink({
               source: podNode.id, target: secretNode.id
-            })
+            });
           }
         }
-      })
+      });
       container.envFrom?.forEach((envFrom) => {
         const configMapName = envFrom.configMapRef?.name;
         if (configMapName) {
@@ -470,7 +713,7 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
             const configMapNode = this.generateNode(configMap);
             this.addLink({
               source: podNode.id, target: configMapNode.id
-            })
+            });
           }
         }
 
@@ -481,15 +724,15 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
             const secretNode = this.generateNode(secret);
             this.addLink({
               source: podNode.id, target: secretNode.id
-            })
+            });
           }
         }
-      })
-    })
+      });
+    });
 
 
     pod.getVolumes().filter(volume => volume.persistentVolumeClaim?.claimName).forEach((volume) => {
-      const volumeClaim = this.pvcStore.getByName(volume.persistentVolumeClaim.claimName, pod.getNs())
+      const volumeClaim = this.pvcStore.getByName(volume.persistentVolumeClaim.claimName, pod.getNs());
       if (volumeClaim) {
         const volumeClaimNode = this.generateNode(volumeClaim);
 
@@ -497,7 +740,7 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
           this.addLink({ target: podNode.id, source: volumeClaimNode.id});
         }
       }
-    })
+    });
 
 
     pod.getVolumes().filter(volume => volume.configMap?.name).forEach((volume) => {
@@ -508,17 +751,17 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
           this.addLink({target: podNode.id, source: dataItem.id});
         }
       }
-    })
+    });
 
     pod.getSecrets().forEach((secretName) => {
       const secret = this.secretStore.getByName(secretName, pod.getNs());
       if (secret) {
-        const dataItem = this.generateNode(secret)
+        const dataItem = this.generateNode(secret);
         if (dataItem) {
           this.addLink({target: podNode.id, source: dataItem.id});
         }
       }
-    })
+    });
 
     return podNode;
   }
@@ -534,7 +777,7 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
         resourceVersion: "1",
         selfLink: `api/v1/helmreleases/${name}`
       }
-    })
+    });
     const releaseData = this.generateNode(releaseObject);
     return releaseData;
   }
@@ -546,22 +789,22 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
 
     if (tooltipElement) {
       if (obj instanceof Renderer.K8sApi.Pod) {
-        ReactDOM.render(<PodTooltip obj={obj} />, tooltipElement)
+        ReactDOM.render(<PodTooltip obj={obj} />, tooltipElement);
       }
       else if (obj instanceof Renderer.K8sApi.Service) {
-        ReactDOM.render(<ServiceTooltip obj={obj} />, tooltipElement)
+        ReactDOM.render(<ServiceTooltip obj={obj} />, tooltipElement);
       }
       else if (obj instanceof Renderer.K8sApi.Deployment) {
-        ReactDOM.render(<DeploymentTooltip obj={obj} />, tooltipElement)
+        ReactDOM.render(<DeploymentTooltip obj={obj} />, tooltipElement);
       }
       else if (obj instanceof Renderer.K8sApi.StatefulSet) {
-        ReactDOM.render(<StatefulsetTooltip obj={obj} />, tooltipElement)
+        ReactDOM.render(<StatefulsetTooltip obj={obj} />, tooltipElement);
       }
       else if (obj instanceof Renderer.K8sApi.Ingress) {
-        ReactDOM.render(<IngressTooltip obj={obj} />, tooltipElement)
+        ReactDOM.render(<IngressTooltip obj={obj} />, tooltipElement);
       }
       else {
-        ReactDOM.render(<DefaultTooltip obj={obj}/>, tooltipElement)
+        ReactDOM.render(<DefaultTooltip obj={obj}/>, tooltipElement);
       }
       return tooltipElement.innerHTML;
     }
@@ -571,99 +814,28 @@ export class KubeResourceChart extends React.Component<KubeResourceChartProps, S
     if (!KubeResourceChart.isReady) {
       return (
         <Renderer.Component.Spinner />
-      )
+      );
     }
 
-    const theme = Renderer.Theme.getActiveTheme()
+    const { id } = this.props;
+
     return (
-      <div id={this.props.id} className="KubeForceChart flex column">
-        <div id="KubeForceChart-tooltip"/>
+      <div id={id} className="KubeForceChart flex column">
+        <div id="KubeForceChart-tooltip" />
         <Renderer.Component.DrawerTitle title="Resources"/>
-
-        <ForceGraph2D
-          graphData={this.state.data}
-          ref={this.chartRef}
-          width={(document.getElementById("kube-resource-map") as HTMLElement)?.parentElement.firstElementChild?.clientWidth || 780}
-          height={400}
-          autoPauseRedraw={false}
-          maxZoom={1.2}
-          cooldownTicks={200}
-          onEngineStop={() => {
-            if (!this.initZoomDone) {
-              if (this.nodes.length > 10) {
-                this.chartRef.current?.zoomToFit(400);
-              } else {
-                this.chartRef.current?.zoom(1.2);
-              }
-              this.initZoomDone = true;
-            }
-          }}
-          linkWidth={link => this.state.highlightLinks.has(link) ? 2 : 1}
-          onNodeHover={this.handleNodeHover.bind(this)}
-          onNodeDrag={this.handleNodeHover.bind(this)}
-          nodeVal="value"
-          nodeLabel={ (node) => this.renderTooltip((node as ChartDataSeries).object) }
-          nodeVisibility={"visible"}
-          linkColor={(link) => { return (link.source as ChartDataSeries).color }}
-          onNodeClick={(node) => {
-            if ((node as ChartDataSeries).object) {
-              const { object } = node as ChartDataSeries;
-              if (object.kind == "HelmRelease") {
-                const path = `/apps/releases/${object.getNs()}/${object.getName()}?`
-                Renderer.Navigation.navigate(path);
-              } else {
-                const detailsUrl = Renderer.Navigation.getDetailsUrl(object.selfLink);
-                Renderer.Navigation.navigate(detailsUrl);
-              }
-            }
-          }}
-          nodeCanvasObject={(node, ctx, globalScale) => {
-            const padAmount = 0;
-            const { name, value, color, image, object } = node as ChartDataSeries
-            const label = name;
-            const fontSize = 9;
-
-            const r = Math.sqrt(Math.max(0, value || 10)) * 4 + padAmount;
-
-            // draw outer circle
-            if (object.getId() === this.props.object.getId()) {
-              ctx.beginPath();
-              ctx.lineWidth = 2;
-              ctx.arc(node.x , node.y, r + 3, 0, 2 * Math.PI, false);
-              ctx.strokeStyle = color;
-              ctx.stroke();
-              ctx.fillStyle = theme.colors["secondaryBackground"];
-              ctx.fill();
-              ctx.closePath();
-            }
-
-            // draw circle
-            const size = this.state.hoverNode == node ? r + 1 : r
-
-            ctx.beginPath();
-            ctx.arc(node.x, node.y, size, 0, 2 * Math.PI, false);
-            ctx.fillStyle = color || 'rgba(31, 120, 180, 0.92)';
-            ctx.fill();
-
-            // draw icon
-            if (image) {
-              try {
-                ctx.drawImage(image, node.x - 15, node.y - 15, 30, 30);
-              }
-              catch (e) {
-                console.error(e)
-              }
-            }
-
-            // draw label
-            ctx.textAlign = 'center';
-            ctx.font = `${fontSize}px Arial`;
-            ctx.textBaseline = 'middle';
-            ctx.fillStyle = theme.colors["textColorPrimary"];
-            ctx.fillText(label, node.x, node.y + r + (10 / globalScale));
-          }}
+        
+        {this.state.showTooltipForObject && (
+          <div style={{ display: 'none' }}>
+            {this.renderTooltip(this.state.showTooltipForObject)}
+          </div>
+        )}
+        
+        <div 
+          id={`${id}-network`} 
+          ref={this.networkContainer} 
+          style={{ width: '100%', height: '400px' }}
         />
       </div>
-    )
+    );
   }
 }

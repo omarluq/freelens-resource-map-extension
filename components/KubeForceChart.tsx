@@ -1,38 +1,54 @@
 import "./KubeForceChart.scss";
-import { Renderer } from "@k8slens/extensions";
-import { comparer, makeObservable, observable, reaction } from "mobx";
+import { Renderer } from "@freelensapp/extensions";
+import { makeObservable, observable, reaction } from "mobx";
 import { disposeOnUnmount, observer } from "mobx-react";
-import React, { createRef, Fragment, MutableRefObject } from "react";
-import { ForceGraph2D} from 'react-force-graph';
-import * as d3 from "d3-force";
+import React from "react";
 import ReactDOM from "react-dom";
-import { PodTooltip, ServiceTooltip, DeploymentTooltip, StatefulsetTooltip, DefaultTooltip} from "./tooltips";
-import { ChartDataSeries, LinkObject, NodeObject } from "./helpers/types";
-import { config } from "./helpers/config";
-
-const d33d = require("d3-force-3d");
+import { Network } from "vis-network";
+import { DataSet } from "vis-data";
+import { PodTooltip, ServiceTooltip, DeploymentTooltip, StatefulsetTooltip, DefaultTooltip } from "./tooltips";
+import { ChartDataSeries, LinkObject } from "./helpers/types";
+import { config, ConfigItem } from "./helpers/config";
 
 export interface KubeForceChartProps {
-  id?: string; // html-id to bind chart
+  id?: string;
   width?: number;
   height?: number;
   widthRef?: string;
 }
 
 interface State {
-  data: {
-    nodes: ChartDataSeries[];
-    links: LinkObject[];
-  };
-  highlightLinks?: Set<LinkObject>;
-  hoverNode?: NodeObject;
+  nodes: ChartDataSeries[];
+  edges: LinkObject[];
+  hoverNode?: string;
+  showTooltipForObject?: Renderer.K8sApi.KubeObject;
 }
+
+type VisNodeColor = {
+  background?: string;
+  border?: string;
+  highlight?: {
+    background?: string;
+    border?: string;
+  };
+};
+
+type VisEdgeColor = {
+  color?: string;
+  highlight?: string;
+};
+
+type VisEdgeSmooth = {
+  enabled: boolean;
+  type: string;
+  roundness: number;
+  forceDirection?: string | boolean;
+};
 
 @observer
 export class KubeForceChart extends React.Component<KubeForceChartProps, State> {
-  @observable static  isReady = false;
+  @observable static isReady = false;
   @observable isUnmounting = false;
-  @observable data: State;
 
   static defaultProps: KubeForceChartProps = {
     id: "kube-resources-map"
@@ -42,15 +58,10 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
 
   protected links: LinkObject[] = [];
   protected nodes: ChartDataSeries[] = [];
-  protected highlightLinks: Set<LinkObject> = new Set<LinkObject>();
-
-
-  protected images: {[key: string]: HTMLImageElement; } = {}
-  protected config = KubeForceChart.config
-  private chartRef: MutableRefObject<any>;
-  protected secretsData: any = [];
-  protected configMapsData: any = [];
-  protected helmData: any = [];
+  protected network: Network | null = null;
+  protected config = KubeForceChart.config;
+  protected images: {[key: string]: HTMLImageElement; } = {};
+  private _clickTimeout: any = null;
 
   protected namespaceStore = (Renderer.K8sApi.apiManager.getStore(Renderer.K8sApi.namespacesApi) as unknown) as Renderer.K8sApi.NamespaceStore;
   protected podsStore = Renderer.K8sApi.apiManager.getStore(Renderer.K8sApi.podsApi) as Renderer.K8sApi.PodsStore;
@@ -63,29 +74,21 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
   protected ingressStore =  Renderer.K8sApi.apiManager.getStore(Renderer.K8sApi.ingressApi) as Renderer.K8sApi.IngressStore;
   protected configMapStore = Renderer.K8sApi.apiManager.getStore(Renderer.K8sApi.configMapApi) as Renderer.K8sApi.ConfigMapsStore;
 
-  private kubeObjectStores: Renderer.K8sApi.KubeObjectStore[] = []
+  private kubeObjectStores: Renderer.K8sApi.KubeObjectStore[] = [];
   private watchDisposers: Function[] = [];
+  private networkContainer = React.createRef<HTMLDivElement>();
 
-  state: Readonly<State> = {
-    data: {
-      nodes: [],
-      links: []
-    },
-    highlightLinks: new Set<LinkObject>()
-  }
-
-  initZoomDone: boolean = false;
+  state: State = {
+    nodes: [],
+    edges: []
+  };
 
   constructor(props: KubeForceChartProps) {
     super(props);
-
     makeObservable(this);
-    this.chartRef = createRef();
-    this.generateImages();
   }
 
   async componentDidMount() {
-    this.setState(this.state)
     this.kubeObjectStores = [
       this.podsStore,
       this.deploymentStore,
@@ -96,92 +99,228 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
       this.pvcStore,
       this.configMapStore,
       this.secretStore,
-    ]
+    ];
+
     await this.loadData();
-
     this.displayChart();
+    
+    // Initialize network visualization after data is loaded
+    setTimeout(() => {
+      if (KubeForceChart.isReady && this.nodes.length > 0) {
+        this.updateNetwork();
+      }
+    }, 100);
 
-    const fg = this.chartRef.current;
-    fg.zoom(1.3, 1000);
-
-    fg?.d3Force('link').strength(1.3).distance(() => 60)
-    fg?.d3Force('charge', d33d.forceManyBody().strength(-60).distanceMax(250));
-    fg?.d3Force('collide', d3.forceCollide(40));
-    fg?.d3Force("center", d3.forceCenter());
-    const reactionOpts = {
-      equals: comparer.structural,
-    }
     disposeOnUnmount(this, [
-      reaction(() => this.namespaceStore.selectedNamespaces, this.namespaceChanged, reactionOpts),
-      reaction(() => this.podsStore.items.toJSON(), () => { this.refreshItems(this.podsStore) }, reactionOpts),
-      reaction(() => this.daemonsetStore.items.toJSON(), () => { this.refreshItems(this.daemonsetStore) }, reactionOpts),
-      reaction(() => this.statefulsetStore.items.toJSON(), () => { this.refreshItems(this.statefulsetStore) }, reactionOpts),
-      reaction(() => this.deploymentStore.items.toJSON(), () => { this.refreshItems(this.deploymentStore) }, reactionOpts),
-      reaction(() => this.serviceStore.items.toJSON(), () => { this.refreshItems(this.serviceStore) }, reactionOpts),
-      reaction(() => this.secretStore.items.toJSON(), () => { this.refreshItems(this.secretStore) }, reactionOpts),
-      reaction(() => this.pvcStore.items.toJSON(), () => { this.refreshItems(this.pvcStore) }, reactionOpts),
-      reaction(() => this.ingressStore.items.toJSON(), () => { this.refreshItems(this.ingressStore) }, reactionOpts),
-      reaction(() => this.configMapStore.items.toJSON(), () => { this.refreshItems(this.configMapStore) }, reactionOpts)
-    ])
+      // React to namespace changes with an extremely robust approach
+      reaction(
+        () => {
+          try {
+            // Handle potential null/undefined cases
+            if (!this.namespaceStore?.selectedNamespaces) {
+              return [];
+            }
+            // Make a deep copy to avoid reference issues
+            return Array.isArray(this.namespaceStore.selectedNamespaces) 
+              ? [...this.namespaceStore.selectedNamespaces] 
+              : [];
+          } catch (e) {
+            console.error("Error in namespace reaction getter:", e);
+            return [];
+          }
+        },
+        (namespaces, prevNamespaces) => {
+          try {
+            console.log("Namespace selection changed:", 
+              JSON.stringify(namespaces), 
+              "Previous:", 
+              JSON.stringify(prevNamespaces)
+            );
+            this.namespaceChanged();
+          } catch (e) {
+            console.error("Error in namespace reaction effect:", e);
+          }
+        },
+        { 
+          fireImmediately: true, 
+          equals: (a, b) => {
+            if (!Array.isArray(a) || !Array.isArray(b)) return false;
+            if (a.length !== b.length) return false;
+            return a.every(item => b.includes(item));
+          }
+        }
+      ),
+      
+      // React to store changes
+      reaction(() => this.podsStore.items.toJSON(), () => { this.refreshItems(this.podsStore) }),
+      reaction(() => this.daemonsetStore.items.toJSON(), () => { this.refreshItems(this.daemonsetStore) }),
+      reaction(() => this.statefulsetStore.items.toJSON(), () => { this.refreshItems(this.statefulsetStore) }),
+      reaction(() => this.deploymentStore.items.toJSON(), () => { this.refreshItems(this.deploymentStore) }),
+      reaction(() => this.serviceStore.items.toJSON(), () => { this.refreshItems(this.serviceStore) }),
+      reaction(() => this.secretStore.items.toJSON(), () => { this.refreshItems(this.secretStore) }),
+      reaction(() => this.pvcStore.items.toJSON(), () => { this.refreshItems(this.pvcStore) }),
+      reaction(() => this.ingressStore.items.toJSON(), () => { this.refreshItems(this.ingressStore) }),
+      reaction(() => this.configMapStore.items.toJSON(), () => { this.refreshItems(this.configMapStore) })
+    ]);
   }
-
-  namespaceChanged = () => {
-    if (KubeForceChart.isReady) {
-      this.displayChart();
+  
+  // Helper method to check if an object should be included based on namespace filter
+  protected shouldIncludeBasedOnNamespace(namespace: string): boolean {
+    try {
+      const { selectedNamespaces } = this.namespaceStore;
+      
+      // If no namespace is selected, show all
+      if (!selectedNamespaces || selectedNamespaces.length === 0) {
+        return true;
+      }
+      
+      // Otherwise, strictly filter by selected namespaces
+      return selectedNamespaces.includes(namespace);
+    } catch (error) {
+      console.error("Error checking namespace:", error);
+      return true; // Include by default if there's an error
+    }
+  }
+  
+  // Filter a list of resources by namespace
+  protected filterByNamespace<T extends Renderer.K8sApi.KubeObject>(
+    items: T[], 
+    getNs: (item: T) => string = (item) => item.getNs()
+  ): T[] {
+    try {
+      const { selectedNamespaces } = this.namespaceStore;
+      console.log("Filtering by namespaces:", selectedNamespaces);
+      
+      // If no namespace is selected, show all
+      if (!selectedNamespaces || selectedNamespaces.length === 0) {
+        return items;
+      }
+      
+      // Filter items by selected namespaces
+      return items.filter(item => {
+        try {
+          const itemNs = getNs(item);
+          return selectedNamespaces.includes(itemNs);
+        } catch (err) {
+          console.warn("Error getting namespace for item:", item, err);
+          return false;
+        }
+      });
+    } catch (error) {
+      console.error("Error filtering by namespace:", error);
+      return items; // Return all items if there's an error
     }
   }
 
-  displayChart = () => {
-    this.nodes = [];
-    this.links = [];
-    this.initZoomDone = false;
-    this.generateChartDataSeries();
-  }
-
-  getLinksForNode(node: ChartDataSeries): LinkObject[] {
-    return this.links.filter((link) => link.source == node || link.target == node )
-  }
-
-  handleNodeHover(node: ChartDataSeries) {
-    const highlightLinks = new Set<LinkObject>();
-    const elem = document.getElementById(this.props.id);
-    elem.style.cursor = node ? 'pointer' : null
-    if (node) {
-      this.getLinksForNode(node).forEach(link => highlightLinks.add(link));
+  componentDidUpdate() {
+    // Only create or update the network if we have nodes to display
+    if (KubeForceChart.isReady && this.nodes.length > 0) {
+      this.updateNetwork();
     }
-    this.setState({ highlightLinks: highlightLinks, hoverNode: node})
-  }
-
-  generateImages() {
-    Object.entries(this.config).forEach(value => {
-      const img = new Image();
-      img.src = value[1].icon;
-      this.config[value[0]].img = img;
-    })
   }
 
   componentWillUnmount() {
     this.isUnmounting = true;
     this.unsubscribeStores();
+    
+    // Clean up the network
+    if (this.network) {
+      this.network.destroy();
+      this.network = null;
+    }
   }
+
+  namespaceChanged = () => {
+    if (!KubeForceChart.isReady) return;
+    
+    try {
+      console.log("Namespace changed, reloading chart with selected namespaces:", 
+        Array.isArray(this.namespaceStore.selectedNamespaces) 
+          ? [...this.namespaceStore.selectedNamespaces] 
+          : "none");
+      
+      // Completely clean everything
+      this.nodes = [];
+      this.links = [];
+      
+      // Update state to clear the UI
+      this.setState({ nodes: [], edges: [] });
+      
+      // Completely destroy the old network
+      if (this.network) {
+        try {
+          this.network.destroy();
+        } catch (e) {
+          console.error("Error destroying network:", e);
+        }
+        this.network = null;
+      }
+      
+      // Short delay to ensure everything is cleaned up
+      setTimeout(() => {
+        // Generate completely new chart data
+        this.displayChart();
+        
+        // Update visualization with a delay to ensure data is processed
+        setTimeout(() => {
+          if (this.network) {
+            // Force a fit with no animation
+            try {
+              this.network.fit({
+                animation: false
+              });
+            } catch (e) {
+              console.error("Error fitting network:", e);
+            }
+          }
+        }, 500);
+      }, 100);
+    } catch (e) {
+      console.error("Error in namespaceChanged:", e);
+    }
+  };
+
+  displayChart = () => {
+    this.nodes = [];
+    this.links = [];
+    this.generateChartDataSeries();
+    this.setState({ nodes: this.nodes, edges: this.links });
+    
+    // Update the network with filtered data
+    setTimeout(() => {
+      if (KubeForceChart.isReady && this.nodes.length > 0) {
+        this.updateNetwork();
+      }
+    }, 100);
+  };
+
+  // SVG icons are now imported as React components
+  // No need to preload images
 
   protected refreshItems(store: Renderer.K8sApi.KubeObjectStore) {
     // remove deleted objects
-    this.nodes.filter(node => node.kind == store.api.kind).forEach(node => {
+    this.nodes.filter(node => node.kind === store.api.kind).forEach(node => {
       if (!store.items.includes(node.object as Renderer.K8sApi.KubeObject)) {
         if (["DaemonSet", "StatefulSet", "Deployment"].includes(node.kind)) {
-          const helmReleaseName = this.getHelmReleaseName(node.object)
+          const helmReleaseName = this.getHelmReleaseName(node.object);
           if (helmReleaseName) {
-            const helmReleaseNode = this.getHelmReleaseChartNode(helmReleaseName, node.namespace)
+            const helmReleaseNode = this.getHelmReleaseChartNode(helmReleaseName, node.namespace);
             if (this.getLinksForNode(helmReleaseNode).length === 1) {
-              this.deleteNode({ node: helmReleaseNode })
+              this.deleteNode({ node: helmReleaseNode });
             }
           }
         }
         this.deleteNode(node);
       }
-    })
-    this.generateChartDataSeries()
+    });
+    this.generateChartDataSeries();
+    
+    // Update the network visualization after data refresh
+    setTimeout(() => {
+      if (KubeForceChart.isReady && this.nodes.length > 0) {
+        this.updateNetwork();
+      }
+    }, 100);
   }
 
   protected unsubscribeStores() {
@@ -193,11 +332,11 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
     this.unsubscribeStores();
     for (const store of this.kubeObjectStores) {
       try {
-        if(!store.isLoaded) {
+        if (!store.isLoaded) {
           await store.loadAll();
         }
-        const unsuscribe = store.subscribe();
-        this.watchDisposers.push(unsuscribe);
+        const unsubscribe = store.subscribe();
+        this.watchDisposers.push(unsubscribe);
       } catch (error) {
         console.error("loading store error", error);
       }
@@ -206,8 +345,8 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
   }
 
   generateChartDataSeries = () => {
-    const nodes = [...this.nodes];
-    const links = [...this.links];
+    const oldNodeCount = this.nodes.length;
+    const oldLinkCount = this.links.length;
 
     this.generateSecrets();
     this.generateVolumeClaims();
@@ -218,288 +357,434 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
     this.generateServices();
     this.generateIngresses();
 
-    if (!nodes.length || nodes.length != this.nodes.length || links.length != this.links.length) { // TODO: Improve the logic
-      this.setState({
-        data: {
-          nodes: this.nodes,
-          links: this.links,
-        },
-        highlightLinks: new Set<LinkObject>()
-      })
+    // Only update state if the data has changed
+    if (oldNodeCount !== this.nodes.length || oldLinkCount !== this.links.length) {
+      this.setState({ nodes: this.nodes, edges: this.links });
+    }
+  };
+
+  updateNetwork() {
+    const { id, width, height } = this.props;
+    const container = document.getElementById(`${id}-network`);
+    if (!container) return;
+
+    // Get proper sidebar width, use safe fallback if not found
+    const sidebar = document.querySelector('[data-testid="cluster-sidebar"]') as HTMLElement;
+    const sidebarWidth = sidebar?.offsetWidth || 200;
+    
+    // Calculate dimensions, leaving room for header and filter
+    const graphWidth = width || window.innerWidth - 70 - sidebarWidth;
+    const graphHeight = height || window.innerHeight - 200; // Increased to allow space for header
+
+    // Destroy existing network if any
+    if (this.network) {
+      this.network.destroy();
+      this.network = null;
     }
 
-  }
-
-  protected generatePods() {
-    const { podsStore } = this;
-    const { selectedNamespaces} = this.namespaceStore;
-    podsStore.getAllByNs(selectedNamespaces).map((pod: Renderer.K8sApi.Pod) => {
-      this.getPodNode(pod);
+    // Convert the nodes and links to vis-network format
+    const visNodes = this.nodes.map(node => {
+      const kind = node.kind.toLowerCase();
+      const nodeConfig = this.config[kind] as ConfigItem || { color: '#666', size: 20, icon: undefined };
+      
+      // Use image shape for K8s resources
+      return {
+        id: node.id,
+        label: node.name,
+        color: {
+          background: node.color || nodeConfig.color || '#666',
+          border: node.color || nodeConfig.color || '#666',
+          highlight: {
+            background: node.color || nodeConfig.color || '#666',
+            border: node.color || nodeConfig.color || '#666'
+          }
+        },
+        shape: 'circularImage',  // Use circular image for icons
+        image: nodeConfig.icon || undefined,
+        size: 25,
+        font: {
+          size: 14,
+          color: '#000',
+          face: 'Roboto, Arial, Helvetica, sans-serif',
+          strokeWidth: 3,
+          strokeColor: '#fff',
+          vadjust: -25 // Move label further away from node
+        },
+        borderWidth: 1,
+        shadow: false,
+        objectData: node
+      };
     });
-  }
 
-  protected generateDeployments() {
-    const { deploymentStore } = this;
-    const { selectedNamespaces} = this.namespaceStore;
-
-    deploymentStore.getAllByNs(selectedNamespaces).map((deployment: Renderer.K8sApi.Deployment) => {
-      const pods = deploymentStore.getChildPods(deployment)
-      this.getControllerChartNode(deployment, pods);
+    const visEdges = this.links.map((link, index) => {
+      const sourceNode = this.nodes.find(n => n.id === link.source) || { color: '#999' };
+      const sourceId = typeof link.source === 'string' ? link.source : String(link.source);
+      const targetId = typeof link.target === 'string' ? link.target : String(link.target);
+      
+      return {
+        from: sourceId,
+        to: targetId,
+        id: `edge-${index}`,
+        color: {
+          color: sourceNode.color || '#999',
+          highlight: '#ff0'
+        },
+        width: 1,
+        smooth: { 
+          enabled: true,
+          type: 'continuous',
+          roundness: 0.5,
+          forceDirection: 'none'
+        }
+      };
     });
-  }
 
-  protected generateStatefulSets() {
-    const { statefulsetStore } = this;
-    const { selectedNamespaces} = this.namespaceStore;
+    // Create vis-network data sets
+    const nodes = new DataSet(visNodes);
+    const edges = new DataSet(visEdges);
 
-    statefulsetStore.getAllByNs(selectedNamespaces).map((statefulset: Renderer.K8sApi.StatefulSet) => {
-      const pods = statefulsetStore.getChildPods(statefulset)
-      this.getControllerChartNode(statefulset, pods);
-    });
-  }
-
-  protected generateDaemonSets() {
-    const { daemonsetStore } = this;
-    const { selectedNamespaces} = this.namespaceStore;
-
-    daemonsetStore.getAllByNs(selectedNamespaces).map((daemonset: Renderer.K8sApi.DaemonSet) => {
-      const pods = daemonsetStore.getChildPods(daemonset)
-      this.getControllerChartNode(daemonset, pods)
-    });
-  }
-
-  protected generateSecrets() {
-    const { secretStore } = this;
-    const { selectedNamespaces} = this.namespaceStore;
-
-    secretStore.getAllByNs(selectedNamespaces).forEach((secret: Renderer.K8sApi.Secret) => {
-      // Ignore service account tokens and tls secrets
-      if (["kubernetes.io/service-account-token", "kubernetes.io/tls"].includes(secret.type.toString())) return;
-
-      const secretNode = this.generateNode(secret);
-
-      if (secret.type.toString() === "helm.sh/release.v1") {
-        const helmReleaseNode = this.getHelmReleaseChartNode(secret.metadata.labels.name, secret.getNs())
-        this.addLink({source: secretNode.id, target: helmReleaseNode.id});
-      }
-
-      // search for container links
-      this.nodes.filter(node => node.kind === "Pod" && node.namespace == secret.getNs()).forEach((podNode) => {
-        const pod = (podNode.object as Renderer.K8sApi.Pod)
-        pod.getContainers().forEach((container) => {
-          container.env?.forEach((env) => {
-            const secretName = env.valueFrom?.secretKeyRef?.name;
-            if (secretName == secret.getName()) {
-              this.addLink({
-                source: podNode.id, target: secretNode.id
-              })
-            }
-          })
-          container.envFrom?.map(envFrom => {
-            const secretName = envFrom.secretRef?.name;
-            if (secretName && secretName == secret.getName()) {
-              this.addLink({
-                source: podNode.id, target: secretNode.id
-              })
-            }
-          })
-        })
-      })
-    })
-  }
-
-  protected generateVolumeClaims() {
-    const { pvcStore } = this;
-    const { selectedNamespaces} = this.namespaceStore;
-
-    pvcStore.getAllByNs(selectedNamespaces).forEach((pvc: Renderer.K8sApi.PersistentVolumeClaim) => {
-      this.generateNode(pvc);
-    })
-  }
-
-  protected generateIngresses() {
-    const { ingressStore } = this
-    const { selectedNamespaces } = this.namespaceStore;
-    ingressStore.getAllByNs(selectedNamespaces).forEach((ingress: Renderer.K8sApi.Ingress) => {
-
-      const ingressNode = this.generateNode(ingress);
-      ingress.spec.tls?.filter(tls => tls.secretName).forEach((tls) => {
-        const secret = this.secretStore.getByName(tls.secretName, ingress.getNs());
-        if (secret) {
-          const secretNode = this.generateNode(secret)
-          if (secretNode) {
-            this.addLink({ source: ingressNode.id, target: secretNode.id })
+    // Define network options
+    const options = {
+      autoResize: true,
+      height: `${graphHeight}px`,
+      width: `${graphWidth}px`,
+      nodes: {
+        shape: 'circularImage',
+        size: 25,
+        font: {
+          size: 14,
+          color: '#000',
+          face: 'Roboto, Arial, Helvetica, sans-serif',
+          strokeWidth: 3,
+          strokeColor: '#fff',
+          vadjust: -25
+        },
+        borderWidth: 1,
+        shadow: {
+          enabled: false
+        },
+        shapeProperties: {
+          useBorderWithImage: true,
+          interpolation: false
+        },
+        brokenImage: undefined,
+        margin: {
+          top: 10,
+          bottom: 10
+        },
+        scaling: {
+          min: 20,
+          max: 35,
+          label: {
+            enabled: true,
+            min: 14,
+            max: 18
           }
         }
-      })
-      ingress.spec.rules.forEach((rule) => {
-        rule.http.paths.forEach((path) => {
-          const serviceName = (path.backend as any).serviceName || (path.backend as any).service.name
-          if (serviceName) {
-            const service = this.serviceStore.getByName(serviceName, ingress.getNs());
-            if (service) {
-              const serviceNode = this.generateNode(service)
-              if (serviceNode) {
-                this.addLink({ source: ingressNode.id, target: serviceNode.id });
-              }
-            }
-          }
-        })
-      })
-    })
-  }
-
-  protected generateServices() {
-    const { serviceStore, podsStore} = this
-    const { selectedNamespaces } = this.namespaceStore;
-    serviceStore.getAllByNs(selectedNamespaces).forEach((service: Renderer.K8sApi.Service) => {
-      const serviceNode = this.generateNode(service);
-      const selector = service.spec.selector;
-      if (selector) {
-        const pods = podsStore.items.filter((item: Renderer.K8sApi.Pod) => {
-          const itemLabels = item.metadata.labels || {};
-          let matches = item.getNs() == service.getNs()
-          if (matches) {
-            matches = Object.entries(selector)
-              .every(([key, value]) => {
-                return itemLabels[key] === value
-              });
-          }
-          return matches
-        });
-        pods.forEach((pod: Renderer.K8sApi.Pod) => {
-          const podNode = this.findNode(pod)
-          if (podNode) {
-            const serviceLink = { source: podNode.id, target: serviceNode.id}
-            this.addLink(serviceLink);
-          }
-        })
+      },
+      edges: {
+        color: {
+          color: '#cbd2d9',
+          highlight: '#cbd2d9' // Same as normal color to avoid highlighting
+        },
+        width: 1,
+        smooth: {
+          enabled: true,
+          type: 'straightCross', // Simpler edge routing
+          roundness: 0.2,        // Less curvature
+          forceDirection: 'none'
+        },
+        arrows: {
+          to: { enabled: true, scaleFactor: 0.3 }
+        },
+        physics: true,
+        selectionWidth: 0 // No edge width change on selection
+      },
+      physics: {
+        enabled: true, // Enable physics for initial positioning
+        stabilization: {
+          enabled: true,
+          iterations: 100,
+          updateInterval: 50,
+          fit: true
+        },
+        barnesHut: {
+          gravitationalConstant: -2000,
+          centralGravity: 0.1,
+          springLength: 100,
+          springConstant: 0.04,
+          damping: 0.09,
+          avoidOverlap: 0.5
+        },
+        solver: 'barnesHut'
+      },
+      interaction: {
+        hover: false, // Disable hover effects
+        tooltipDelay: 0,
+        hideEdgesOnDrag: false,
+        navigationButtons: false,
+        keyboard: {
+          enabled: true,
+          bindToWindow: false
+        },
+        zoomView: true,
+        hoverConnectedEdges: false // Disable edge highlighting on hover
+      },
+      layout: {
+        improvedLayout: true,
+        hierarchical: {
+          enabled: false
+        }
       }
-    })
+    };
 
-  }
-
-  protected addLink(link: LinkObject) {
-    const linkExists = this.findLink(link);
-
-    if (!linkExists) {
-      this.links.push(link);
+    // Create the network instance
+    try {
+      this.network = new Network(container, { nodes, edges }, options);
+      
+      // Add event listeners
+      this.network.on('click', this.handleNodeClick);
+      this.network.on('hoverNode', this.handleNodeHover);
+      this.network.on('blurNode', this.handleNodeHover);
+      
+      // No need to track positions for SVG rendering
+      
+      // Update stabilization options
+      this.network.setOptions({
+        physics: {
+          stabilization: {
+            enabled: true,
+            iterations: 500,
+            updateInterval: 25,
+            fit: true,
+            onlyDynamicEdges: false
+          }
+        }
+      });
+      
+      // Let physics handle the initial layout
+      
+      // Stabilize once and disable physics
+      this.network.once('stabilized', () => {
+        console.log('Network stabilized');
+        // Disable physics after stabilization for a fixed layout
+        this.network.setOptions({ physics: { enabled: false } });
+      });
+      
+      // Initial fit with no animation
+      setTimeout(() => {
+        if (this.network) {
+          console.log('Fitting network view');
+          try {
+            this.network.fit({
+              animation: false
+            });
+          } catch (e) {
+            console.error("Error fitting view:", e);
+          }
+        }
+      }, 100);
+    } catch (error) {
+      console.error("Error creating vis-network:", error);
     }
   }
 
-  protected findLink(link: LinkObject) {
-    return this.links.find(existingLink => (existingLink.source === link.source || (existingLink.source as NodeObject).id === link.source) && (existingLink.target === link.target || (existingLink.target as NodeObject).id === link.target))
+  getLinksForNode(node: ChartDataSeries): LinkObject[] {
+    return this.links.filter((link) => link.source === node.id || link.target === node.id);
   }
+
+  handleNodeClick = (params: any) => {
+    // Prevent quick double clicks
+    if (this._clickTimeout) {
+      clearTimeout(this._clickTimeout);
+      this._clickTimeout = null;
+      return;
+    }
+    
+    this._clickTimeout = setTimeout(() => {
+      this._clickTimeout = null;
+      
+      if (params.nodes && params.nodes.length > 0) {
+        const nodeId = params.nodes[0];
+        const node = this.nodes.find(n => n.id === nodeId);
+        
+        if (node && node.object) {
+          const object = node.object;
+          console.log("Clicked node:", node.id, object.kind, object.getName());
+          
+          try {
+            if (object.kind === "HelmRelease") {
+              const path = `/apps/releases/${object.getNs()}/${object.getName()}?`;
+              Renderer.Navigation.navigate(path);
+            } else {
+              const detailsUrl = Renderer.Navigation.getDetailsUrl(object.selfLink);
+              Renderer.Navigation.navigate(detailsUrl);
+            }
+          } catch (error) {
+            console.error("Error navigating to node details:", error);
+          }
+        }
+      }
+    }, 300);
+  };
+
+  handleNodeHover = (params: any) => {
+    if (params.node) {
+      const nodeId = params.node;
+      const node = this.nodes.find(n => n.id === nodeId);
+      
+      if (node && node.object) {
+        this.setState({ 
+          hoverNode: nodeId,
+          showTooltipForObject: node.object
+        });
+      }
+    } else {
+      this.setState({ 
+        hoverNode: undefined,
+        showTooltipForObject: undefined
+      });
+    }
+  };
+  
+  // We're using vis-network's built-in image handling now
+
+  // Helper methods
+  protected addLink(link: { source: string, target: string }) {
+    const linkExists = this.links.find(l => 
+      (l.source === link.source && l.target === link.target) || 
+      (l.source === link.target && l.target === link.source)
+    );
+    
+    if (!linkExists) {
+      this.links.push(link as LinkObject);
+    }
+  }
+
   protected findNode(object: Renderer.K8sApi.KubeObject) {
     if (!object) {
       return null;
     }
-
-    return this.nodes.find(node => node.kind == object.kind && node.namespace && object.getNs() && node.name == object.getName())
+    return this.nodes.find(node => 
+      node.kind === object.kind && 
+      node.namespace === object.getNs() && 
+      node.name === object.getName()
+    );
   }
 
-  protected deleteNode(opts: {node?: ChartDataSeries; object?: Renderer.K8sApi.KubeObject}) {
-    const node = opts.node || this.findNode(opts.object);
-
-    if(!node) {
+  protected deleteNode(opts: { node?: ChartDataSeries; object?: Renderer.K8sApi.KubeObject }) {
+    const nodeToDelete = opts.node || this.findNode(opts.object!);
+    if (!nodeToDelete) {
       return;
     }
+    
+    // Remove all links connected to this node
+    this.links = this.links.filter(link => 
+      link.source !== nodeToDelete.id && link.target !== nodeToDelete.id
+    );
 
-    this.getLinksForNode(node).forEach(link => {
-      this.links.splice(this.links.indexOf(link), 1);
-    })
-
-    this.nodes.splice(this.nodes.indexOf(node), 1);
+    // Remove the node itself
+    const index = this.nodes.indexOf(nodeToDelete);
+    if (index !== -1) {
+      this.nodes.splice(index, 1);
+    }
   }
 
   generateNode(object: Renderer.K8sApi.KubeObject): ChartDataSeries {
     const existingNode = this.findNode(object);
-
     if (existingNode) {
       return existingNode;
     }
 
-    const id = `${object.kind}-${object.getName()}`
-    const { color, img, size } = this.config[object.kind.toLowerCase()]
-
+    const id = `${object.kind}-${object.getName()}`;
+    const kind = object.kind.toLowerCase();
+    const nodeConfig = (this.config[kind] as ConfigItem) || { color: '#999', size: 5, icon: undefined };
+    
     const chartNode: ChartDataSeries = {
-      id: id,
-      object: object,
+      id,
+      object,
       kind: object.kind,
       name: object.getName(),
       namespace: object.getNs(),
-      value: size,
-      color: color,
-      image: img,
+      value: nodeConfig.size || 5,
+      color: nodeConfig.color || '#999',
+      icon: nodeConfig.icon,
       visible: true
-    }
+    };
 
-    this.nodes.push(chartNode)
-
+    this.nodes.push(chartNode);
     return chartNode;
   }
 
   getControllerChartNode(object: Renderer.K8sApi.KubeObject, pods: Renderer.K8sApi.Pod[]): ChartDataSeries {
     const controllerNode = this.generateNode(object);
+    
     pods.forEach((pod: Renderer.K8sApi.Pod) => {
-      const podNode = this.getPodNode(pod)
-      this.addLink({ source: controllerNode.id, target: podNode.id})
-    })
+      const podNode = this.getPodNode(pod);
+      this.addLink({ source: controllerNode.id, target: podNode.id });
+    });
+    
     const releaseName = this.getHelmReleaseName(object);
-
     if (releaseName) {
-      const release = this.getHelmReleaseChartNode(releaseName, object.getNs())
-      this.addLink({target: release.id, source: controllerNode.id})
+      const release = this.getHelmReleaseChartNode(releaseName, object.getNs());
+      this.addLink({ target: release.id, source: controllerNode.id });
     }
-    return controllerNode
+    
+    return controllerNode;
   }
 
-  getHelmReleaseName(object: Renderer.K8sApi.KubeObject): string {
+  getHelmReleaseName(object: Renderer.K8sApi.KubeObject): string | null {
     if (object.metadata?.labels?.heritage === "Helm" && object.metadata?.labels?.release) {
-      return object.metadata.labels.release
+      return object.metadata.labels.release;
     }
-    if (object.metadata?.labels && object.metadata?.annotations && object.metadata?.labels["app.kubernetes.io/managed-by"] == "Helm" && object.metadata?.annotations["meta.helm.sh/release-name"]) {
-      return object.metadata.annotations["meta.helm.sh/release-name"]
+    if (object.metadata?.labels && 
+        object.metadata?.annotations && 
+        object.metadata?.labels["app.kubernetes.io/managed-by"] === "Helm" && 
+        object.metadata?.annotations["meta.helm.sh/release-name"]) {
+      return object.metadata.annotations["meta.helm.sh/release-name"];
     }
-    return null
+    return null;
   }
 
   getPodNode(pod: Renderer.K8sApi.Pod): ChartDataSeries {
     const podNode = this.generateNode(pod);
+    
+    // Set color based on pod status
     if (["Running", "Succeeded"].includes(pod.getStatusMessage())) {
-      podNode.color = "#4caf50";
+      podNode.color = "#4caf50"; // Green for healthy pods
     }
     else if (["Terminating", "Terminated", "Completed"].includes(pod.getStatusMessage())) {
-      podNode.color = "#9dabb5";
+      podNode.color = "#9dabb5"; // Gray for terminated pods
     }
     else if (["Pending", "ContainerCreating"].includes(pod.getStatusMessage())) {
-      podNode.color = "#2F4F4F" // #ff9800"
+      podNode.color = "#2F4F4F"; // Darker gray for pending
     }
     else if (["CrashLoopBackOff", "Failed", "Error"].includes(pod.getStatusMessage())) {
-      podNode.color = "#ce3933"
+      podNode.color = "#ce3933"; // Red for error states
     }
-    pod.getContainers().forEach((container) => {
-      container.env?.forEach((env) => {
+    
+    // Process pod containers for environment variables and volumes
+    pod.getContainers().forEach(container => {
+      // Process environment variables
+      container.env?.forEach(env => {
         const secretName = env.valueFrom?.secretKeyRef?.name;
         if (secretName) {
           const secret = this.secretStore.getByName(secretName, pod.getNs());
           if (secret) {
-            const secretNode = this.generateNode(secret)
-            this.addLink({
-              source: podNode.id, target: secretNode.id
-            })
+            const secretNode = this.generateNode(secret);
+            this.addLink({ source: podNode.id, target: secretNode.id });
           }
         }
-      })
-      container.envFrom?.forEach((envFrom) => {
+      });
+      
+      // Process envFrom sources
+      container.envFrom?.forEach(envFrom => {
         const configMapName = envFrom.configMapRef?.name;
         if (configMapName) {
           const configMap = this.configMapStore.getByName(configMapName, pod.getNs());
           if (configMap) {
             const configMapNode = this.generateNode(configMap);
-            this.addLink({
-              source: podNode.id, target: configMapNode.id
-            })
+            this.addLink({ source: podNode.id, target: configMapNode.id });
           }
         }
 
@@ -508,45 +793,44 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
           const secret = this.secretStore.getByName(secretName, pod.getNs());
           if (secret) {
             const secretNode = this.generateNode(secret);
-            this.addLink({
-              source: podNode.id, target: secretNode.id
-            })
+            this.addLink({ source: podNode.id, target: secretNode.id });
           }
         }
-      })
-    })
+      });
+    });
 
-
-    pod.getVolumes().filter(volume => volume.persistentVolumeClaim?.claimName).forEach((volume) => {
-      const volumeClaim = this.pvcStore.getByName(volume.persistentVolumeClaim.claimName, pod.getNs())
+    // Process persistent volume claims
+    pod.getVolumes().filter(volume => volume.persistentVolumeClaim?.claimName).forEach(volume => {
+      const volumeClaim = this.pvcStore.getByName(volume.persistentVolumeClaim.claimName, pod.getNs());
       if (volumeClaim) {
         const volumeClaimNode = this.generateNode(volumeClaim);
-
         if (volumeClaimNode) {
-          this.addLink({ target: podNode.id, source: volumeClaimNode.id});
+          this.addLink({ target: podNode.id, source: volumeClaimNode.id });
         }
       }
-    })
+    });
 
-
-    pod.getVolumes().filter(volume => volume.configMap?.name).forEach((volume) => {
+    // Process configMap volumes
+    pod.getVolumes().filter(volume => volume.configMap?.name).forEach(volume => {
       const configMap = this.configMapStore.getByName(volume.configMap.name, pod.getNs());
       if (configMap) {
         const dataItem = this.generateNode(configMap);
         if (dataItem) {
-          this.addLink({target: podNode.id, source: dataItem.id});
+          this.addLink({ target: podNode.id, source: dataItem.id });
         }
       }
-    })
-    pod.getSecrets().forEach((secretName) => {
+    });
+    
+    // Process secrets used by the pod
+    pod.getSecrets().forEach(secretName => {
       const secret = this.secretStore.getByName(secretName, pod.getNs());
       if (secret && secret.type.toString() !== "kubernetes.io/service-account-token") {
-        const dataItem = this.generateNode(secret)
+        const dataItem = this.generateNode(secret);
         if (dataItem) {
-          this.addLink({target: podNode.id, source: dataItem.id});
+          this.addLink({ target: podNode.id, source: dataItem.id });
         }
       }
-    })
+    });
 
     return podNode;
   }
@@ -562,34 +846,195 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
         resourceVersion: "1",
         selfLink: `api/v1/helmreleases/${name}`
       }
-    })
-    const releaseData = this.generateNode(releaseObject);
-    return releaseData;
+    });
+    return this.generateNode(releaseObject);
   }
 
   renderTooltip(obj: Renderer.K8sApi.KubeObject) {
     if (!obj) return;
 
     const tooltipElement = document.getElementById("KubeForceChart-tooltip");
+    if (!tooltipElement) return;
 
-    if (tooltipElement) {
-      if (obj instanceof Renderer.K8sApi.Pod) {
-        ReactDOM.render(<PodTooltip obj={obj} />, tooltipElement)
-      }
-      else if (obj instanceof Renderer.K8sApi.Service) {
-        ReactDOM.render(<ServiceTooltip obj={obj} />, tooltipElement)
-      }
-      else if (obj instanceof Renderer.K8sApi.Deployment) {
-        ReactDOM.render(<DeploymentTooltip obj={obj} />, tooltipElement)
-      }
-      else if (obj instanceof Renderer.K8sApi.StatefulSet) {
-        ReactDOM.render(<StatefulsetTooltip obj={obj} />, tooltipElement)
-      }
-      else {
-        ReactDOM.render(<DefaultTooltip obj={obj}/>, tooltipElement)
-      }
-      return tooltipElement.innerHTML;
+    // Render the appropriate tooltip component based on the object type
+    if (obj instanceof Renderer.K8sApi.Pod) {
+      ReactDOM.render(<PodTooltip obj={obj} />, tooltipElement);
     }
+    else if (obj instanceof Renderer.K8sApi.Service) {
+      ReactDOM.render(<ServiceTooltip obj={obj} />, tooltipElement);
+    }
+    else if (obj instanceof Renderer.K8sApi.Deployment) {
+      ReactDOM.render(<DeploymentTooltip obj={obj} />, tooltipElement);
+    }
+    else if (obj instanceof Renderer.K8sApi.StatefulSet) {
+      ReactDOM.render(<StatefulsetTooltip obj={obj} />, tooltipElement);
+    }
+    else {
+      ReactDOM.render(<DefaultTooltip obj={obj}/>, tooltipElement);
+    }
+    
+    return tooltipElement.innerHTML;
+  }
+
+  // Data generation methods
+  protected generatePods() {
+    const { podsStore } = this;
+    
+    // Use helper method to filter by namespace
+    this.filterByNamespace(podsStore.items).forEach((pod: Renderer.K8sApi.Pod) => {
+      this.getPodNode(pod);
+    });
+  }
+
+  protected generateDeployments() {
+    const { deploymentStore } = this;
+    
+    // Use helper method to filter by namespace
+    this.filterByNamespace(deploymentStore.items).forEach((deployment: Renderer.K8sApi.Deployment) => {
+      const pods = deploymentStore.getChildPods(deployment);
+      this.getControllerChartNode(deployment, pods);
+    });
+  }
+
+  protected generateStatefulSets() {
+    const { statefulsetStore } = this;
+    
+    // Use helper method to filter by namespace
+    this.filterByNamespace(statefulsetStore.items).forEach((statefulset: Renderer.K8sApi.StatefulSet) => {
+      const pods = statefulsetStore.getChildPods(statefulset);
+      this.getControllerChartNode(statefulset, pods);
+    });
+  }
+
+  protected generateDaemonSets() {
+    const { daemonsetStore } = this;
+    
+    // Use helper method to filter by namespace
+    this.filterByNamespace(daemonsetStore.items).forEach((daemonset: Renderer.K8sApi.DaemonSet) => {
+      const pods = daemonsetStore.getChildPods(daemonset);
+      this.getControllerChartNode(daemonset, pods);
+    });
+  }
+
+  protected generateSecrets() {
+    const { secretStore } = this;
+    
+    // Use helper method to filter by namespace
+    this.filterByNamespace(secretStore.items).forEach((secret: Renderer.K8sApi.Secret) => {
+      // Ignore service account tokens and tls secrets
+      if (["kubernetes.io/service-account-token", "kubernetes.io/tls"].includes(secret.type.toString())) return;
+
+      const secretNode = this.generateNode(secret);
+
+      if (secret.type.toString() === "helm.sh/release.v1") {
+        const helmReleaseNode = this.getHelmReleaseChartNode(secret.metadata.labels.name, secret.getNs());
+        this.addLink({ source: secretNode.id, target: helmReleaseNode.id });
+      }
+
+      // search for container links (only within the same namespace)
+      this.nodes.filter(node => node.kind === "Pod" && node.namespace === secret.getNs()).forEach((podNode) => {
+        const pod = (podNode.object as Renderer.K8sApi.Pod);
+        pod.getContainers().forEach((container: Renderer.K8sApi.IPodContainer) => {
+          container.env?.forEach((env: { valueFrom?: { secretKeyRef?: { name: string; key: string; } } }) => {
+            const secretName = env.valueFrom?.secretKeyRef?.name;
+            if (secretName === secret.getName()) {
+              this.addLink({
+                source: podNode.id, target: secretNode.id
+              });
+            }
+          });
+          
+          container.envFrom?.forEach((envFrom: { secretRef?: { name: string; }; configMapRef?: { name: string; } }) => {
+            const secretName = envFrom.secretRef?.name;
+            if (secretName && secretName === secret.getName()) {
+              this.addLink({
+                source: podNode.id, target: secretNode.id
+              });
+            }
+          });
+        });
+      });
+    });
+  }
+
+  protected generateVolumeClaims() {
+    const { pvcStore } = this;
+    
+    // Use helper method to filter by namespace
+    this.filterByNamespace(pvcStore.items).forEach((pvc: Renderer.K8sApi.PersistentVolumeClaim) => {
+      this.generateNode(pvc);
+    });
+  }
+
+  protected generateIngresses() {
+    const { ingressStore } = this;
+    
+    // Use helper method to filter by namespace
+    this.filterByNamespace(ingressStore.items).forEach((ingress: Renderer.K8sApi.Ingress) => {
+      const ingressNode = this.generateNode(ingress);
+      
+      // Process TLS secrets
+      ingress.spec.tls?.filter((tls: { secretName: string }) => tls.secretName).forEach((tls: { secretName: string }) => {
+        const secret = this.secretStore.getByName(tls.secretName, ingress.getNs());
+        if (secret) {
+          const secretNode = this.generateNode(secret);
+          if (secretNode) {
+            this.addLink({ source: ingressNode.id, target: secretNode.id });
+          }
+        }
+      });
+      
+      // Process rules and paths
+      ingress.spec.rules.forEach((rule: { host?: string; http?: { paths: Array<{ path?: string; backend: any }> } }) => {
+        if (rule.http) {
+          rule.http.paths.forEach((path: { path?: string; backend: any }) => {
+            const serviceName = (path.backend as any).serviceName || (path.backend as any).service?.name;
+            if (serviceName) {
+              const service = this.serviceStore.getByName(serviceName, ingress.getNs());
+              if (service) {
+                const serviceNode = this.generateNode(service);
+                if (serviceNode) {
+                  this.addLink({ source: ingressNode.id, target: serviceNode.id });
+                }
+              }
+            }
+          });
+        }
+      });
+    });
+  }
+
+  protected generateServices() {
+    const { serviceStore, podsStore } = this;
+    
+    // Use helper method to filter by namespace
+    this.filterByNamespace(serviceStore.items).forEach((service: Renderer.K8sApi.Service) => {
+      const serviceNode = this.generateNode(service);
+      const selector = service.spec.selector;
+      
+      if (selector) {
+        // Find matching pods by selector and namespace
+        const pods = this.filterByNamespace(podsStore.items)
+          .filter((pod: Renderer.K8sApi.Pod) => {
+            // Check if this pod is in the same namespace as the service
+            if (pod.getNs() !== service.getNs()) return false;
+            
+            // Check if the pod's labels match the service selector
+            const itemLabels = pod.metadata.labels || {};
+            return Object.entries(selector).every(([key, value]) => {
+              return itemLabels[key] === value;
+            });
+          });
+        
+        pods.forEach((pod: Renderer.K8sApi.Pod) => {
+          const podNode = this.findNode(pod);
+          if (podNode) {
+            const serviceLink = { source: podNode.id, target: serviceNode.id };
+            this.addLink(serviceLink);
+          }
+        });
+      }
+    });
   }
 
   render() {
@@ -598,98 +1043,25 @@ export class KubeForceChart extends React.Component<KubeForceChartProps, State> 
         <div className="KubeForceChart flex center">
           <Renderer.Component.Spinner />
         </div>
-      )
+      );
     }
-    const theme = Renderer.Theme.getActiveTheme();
 
-    const { id, width, height } = this.props;
-    const sidebarWidth = (document.querySelectorAll('[data-testid="cluster-sidebar"]')[0] as HTMLElement)?.offsetWidth || 200;
+    const { id } = this.props;
+
     return (
       <div id={id} className="KubeForceChart">
-        <div id="KubeForceChart-tooltip"/>
-        <ForceGraph2D
-          graphData={this.state.data}
-          ref={this.chartRef}
-          width={width || window.innerWidth - 70 - sidebarWidth }
-          height={height || window.innerHeight}
-          autoPauseRedraw={false}
-          linkWidth={link => this.state.highlightLinks.has(link) ? 2 : 1}
-          maxZoom={2}
-          cooldownTicks={200}
-          onEngineStop={() => {
-            if (!this.initZoomDone) {
-              if (this.nodes.length > 10) {
-                this.chartRef.current.zoomToFit(400);
-              } else {
-                this.chartRef.current.zoom(1.2);
-              }
-              this.initZoomDone = true;
-            }
-          }}
-          onNodeHover={this.handleNodeHover.bind(this)}
-          onNodeDrag={this.handleNodeHover.bind(this)}
-          nodeVal="value"
-          nodeLabel={ (node: ChartDataSeries) => { return this.renderTooltip(node.object)} }
-          nodeVisibility={"visible"}
-          linkColor={(link) => { return (link.source as ChartDataSeries).color }}
-          onNodeClick={(node: ChartDataSeries) => {
-            if (node.object) {
-              if (node.object.kind == "HelmRelease") {
-                const path = `/apps/releases/${node.object.getNs()}/${node.object.getName()}?`
-                Renderer.Navigation.navigate(path);
-              } else {
-                const detailsUrl = Renderer.Navigation.getDetailsUrl(node.object.selfLink);
-                Renderer.Navigation.navigate(detailsUrl);
-              }
-            }
-          }}
-          nodeCanvasObject={(node: ChartDataSeries, ctx, globalScale) => {
-            const padAmount = 0;
-            const label = node.name;
-            const fontSize = 8;
-
-            const r = Math.sqrt(Math.max(0, node.value || 10)) * 4 + padAmount;
-
-            // draw outer circle
-            if (["Deployment", "DaemonSet", "StatefulSet"].includes(node.kind)) {
-              ctx.beginPath();
-              ctx.lineWidth = 2;
-              ctx.arc(node.x , node.y, r + 3, 0, 2 * Math.PI, false);
-              ctx.strokeStyle = node.color;
-              ctx.stroke();
-              ctx.fillStyle = theme.colors["secondaryBackground"];
-              ctx.fill();
-              ctx.closePath();
-            }
-
-            // draw circle
-            const size = this.state.hoverNode == node ? r + 1 : r
-
-            ctx.beginPath();
-            ctx.arc(node.x, node.y, size, 0, 2 * Math.PI, false);
-            ctx.fillStyle = node.color || 'rgba(31, 120, 180, 0.92)';
-            ctx.fill();
-
-            // draw icon
-            const image = node.image;
-            if (image) {
-              try {
-                ctx.drawImage(image, node.x - 15, node.y - 15, 30, 30);
-              } catch (e) {
-                console.error(e);
-              }
-
-            }
-
-            // draw label
-            ctx.textAlign = 'center';
-            ctx.font = `${fontSize}px Arial`;
-            ctx.textBaseline = 'middle';
-            ctx.fillStyle = theme.colors["textColorPrimary"];
-            ctx.fillText(label, node.x, node.y + r + (10 / globalScale));
-          }}
+        <div id="KubeForceChart-tooltip" />
+        {this.state.showTooltipForObject && (
+          <div style={{ display: 'none' }}>
+            {this.renderTooltip(this.state.showTooltipForObject)}
+          </div>
+        )}
+        <div 
+          id={`${id}-network`} 
+          ref={this.networkContainer} 
+          style={{ width: '100%', height: '100%', position: 'relative' }}
         />
       </div>
-    )
+    );
   }
 }

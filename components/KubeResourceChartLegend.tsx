@@ -1,6 +1,7 @@
 import "./KubeResourceChartLegend.scss"
 import React from "react";
 import { KubeForceChart } from "./KubeForceChart"
+import { ConfigItem } from "./helpers/config";
 import { observer } from "mobx-react";
 
 interface Props {
@@ -22,7 +23,24 @@ export class KubeResourceChartLegend extends React.Component<Props> {
           const style = { "--color": configItem.color } as React.CSSProperties;
           return (
             <div key={kind} className="resource flex gaps align-center" style={style}>
-              <img className="resource-icon" src={configItem.icon} width={iconSize} height={iconSize} alt={kind}/>
+              <div className="resource-icon">
+                {(configItem as ConfigItem).icon ? 
+                  React.createElement((configItem as ConfigItem).icon as any, {
+                    width: iconSize,
+                    height: iconSize,
+                    fill: (configItem as ConfigItem).color,
+                    className: "resource-icon"
+                  }) : 
+                  <div 
+                    style={{
+                      width: iconSize, 
+                      height: iconSize, 
+                      backgroundColor: (configItem as ConfigItem).color,
+                      borderRadius: "50%"
+                    }} 
+                  />
+                }
+              </div>
               <span className="resource-kind">{resource}</span>
             </div>
           )

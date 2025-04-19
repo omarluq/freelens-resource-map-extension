@@ -1,4 +1,4 @@
-import { Renderer, Common} from "@k8slens/extensions";
+import { Renderer, Common} from "@freelensapp/extensions";
 import React from "react";
 export interface DeploymentTooltipProps {
   obj: Renderer.K8sApi.Deployment;
@@ -21,7 +21,7 @@ export class DeploymentTooltip extends React.Component<DeploymentTooltipProps> {
            {obj.getAge()} ago
         </Renderer.Component.DrawerItem>
         <Renderer.Component.DrawerItem name="Selector" labelsOnly>
-          {obj.getSelectors().map(selector => {
+          {obj.getSelectors().map((selector: string) => {
             return (
               <div key={selector}>
                 <Renderer.Component.Badge key={selector} label={selector}/>
@@ -38,7 +38,7 @@ export class DeploymentTooltip extends React.Component<DeploymentTooltipProps> {
         </Renderer.Component.DrawerItem>
         <Renderer.Component.DrawerItem name="Conditions" className="conditions" labelsOnly>
           {
-            obj.getConditions().map(condition => {
+            obj.getConditions().map((condition: {type: string; message: string; lastTransitionTime: string; status: string}) => {
               const { type, message, lastTransitionTime, status } = condition;
 
               return (

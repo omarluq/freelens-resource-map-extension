@@ -1,4 +1,4 @@
-import { Common, Renderer,} from "@k8slens/extensions";
+import { Common, Renderer,} from "@freelensapp/extensions";
 import React from "react";
 
 export interface ServiceTooltipProps {
@@ -21,7 +21,7 @@ export class ServiceTooltip extends React.Component<ServiceTooltipProps> {
            {obj.getAge()} ago
         </Renderer.Component.DrawerItem>
         <Renderer.Component.DrawerItem name="Selector" labelsOnly>
-          {obj.getSelector().map(selector => {
+          {obj.getSelector().map((selector: string) => {
             return (
               <div key={selector}>
                 <Renderer.Component.Badge key={selector} label={selector}/>
@@ -36,7 +36,7 @@ export class ServiceTooltip extends React.Component<ServiceTooltipProps> {
   }
 
   renderContainersStatus(pod: Renderer.K8sApi.Pod) {
-    return pod.getContainerStatuses().map(containerStatus => {
+    return pod.getContainerStatuses().map((containerStatus: { name: string; state: string; ready: boolean }) => {
       const { name, state, ready } = containerStatus;
 
       return (

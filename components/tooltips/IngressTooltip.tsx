@@ -1,4 +1,4 @@
-import { Common, Renderer,} from "@k8slens/extensions";
+import { Common, Renderer,} from "@freelensapp/extensions";
 import React from "react";
 
 export interface IngressTooltipProps {
@@ -51,7 +51,7 @@ export class IngressTooltip extends React.Component<IngressTooltipProps> {
 
     if (!rules || !rules.length) return null;
 
-    return rules.map((rule, index) => {
+    return rules.map((rule: { host?: string; http?: { paths: Array<{ path?: string; backend: IIngressBackend }> } }, index: number) => {
       return (
         <div className="rules" key={index}>
           {rule.host && (
@@ -62,7 +62,7 @@ export class IngressTooltip extends React.Component<IngressTooltipProps> {
           {rule.http && (
             <Renderer.Component.Table className="paths">
               {
-                rule.http.paths.map((path, index) => {
+                rule.http.paths.map((path: { path?: string; backend: IIngressBackend }, index: number) => {
                   const { serviceName, servicePort } = this.getBackendServiceNamePort(path.backend);
                   const backend = `${serviceName}:${servicePort}`;
 

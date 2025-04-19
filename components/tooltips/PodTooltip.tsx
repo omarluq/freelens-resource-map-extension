@@ -1,4 +1,4 @@
-import { Renderer, Common } from "@k8slens/extensions";
+import { Renderer, Common } from "@freelensapp/extensions";
 import React from "react";
 
 export interface PodTooltipProps {
@@ -21,7 +21,7 @@ export class PodTooltip extends React.Component<PodTooltipProps> {
            {obj.getAge()} ago
         </Renderer.Component.DrawerItem>
         <Renderer.Component.DrawerItem name="Labels">
-          {obj.getLabels().map(label => {
+          {obj.getLabels().map((label: string) => {
             return (
               <div key={label}>
                 <Renderer.Component.Badge label={label} title={label}/>
@@ -43,7 +43,7 @@ export class PodTooltip extends React.Component<PodTooltipProps> {
   }
 
   renderContainersStatus(pod: Renderer.K8sApi.Pod) {
-    return pod.getContainerStatuses().map(containerStatus => {
+    return pod.getContainerStatuses().map((containerStatus: { name: string; state: string; ready: boolean }) => {
       const { name, state, ready } = containerStatus;
 
       return (

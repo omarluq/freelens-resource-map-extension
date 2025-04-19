@@ -1,6 +1,6 @@
 import "./KubeResourcePage.scss"
 import React from "react";
-import { Common, Renderer } from "@k8slens/extensions";
+import { Common, Renderer } from "@freelensapp/extensions";
 import { KubeForceChart } from "./KubeForceChart"
 import { KubeResourceChartLegend } from "./KubeResourceChartLegend";
 

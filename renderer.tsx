@@ -1,5 +1,5 @@
 import React from "react"
-import { Renderer } from "@k8slens/extensions";
+import { Renderer } from "@freelensapp/extensions";
 import { KubeForceChart, KubeResourcePage } from "./components"
 import { KubeControllerChart } from "./components/KubeControllerChart";
 import { KubePodChart } from "./components/KubePodChart";
@@ -56,7 +56,6 @@ export default class KubeResorceMapRenderer extends Renderer.LensExtension {
         Details: (props: Renderer.Component.KubeObjectDetailsProps<Renderer.K8sApi.Pod>) => <KubeIngressChart {...props} />
       }
     }
-
   ];
 
   clusterPages = [
@@ -79,27 +78,37 @@ export default class KubeResorceMapRenderer extends Renderer.LensExtension {
   kubeWorkloadsOverviewItems = [
     {
       priority: 25,
-      components : {
-        Details: () => { return (
-          <div className="ResourceMapOverviewDetail">
-            <div className="header flex gaps align-center">
-              <h5 className="box grow">Resources</h5>
+      components: {
+        Details: () => {
+          return (
+            <div className="ResourceMapOverviewDetail">
+              <div className="header flex gaps align-center">
+                <h5 className="box grow">Resources</h5>
+              </div>
+              <div className="content">
+                <KubeForceChart height={480} />
+              </div>
             </div>
-            <div className="content">
-              <KubeForceChart height={480} />
-            </div>
-          </div>
-        )}
+          )
+        }
       }
     }
   ]
+
+  onActivate() {
+    console.log("kube-resource-map extension activated");
+  }
+
+  onDeactivate() {
+    console.log("kube-resource-map extension deactivated");
+  }
 }
 
 export function MenuIcon(props: Renderer.Component.IconProps): React.ReactElement {
   return (
     <Renderer.Component.Icon
       material="bubble_chart"
-      onClick={() => this.navigate()}
+      {...props}
     />
   )
 }
