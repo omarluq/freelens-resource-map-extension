@@ -1,10 +1,9 @@
-import { Renderer } from "@freelensapp/extensions";
+import type { Renderer } from "@freelensapp/extensions";
 import { observer } from "mobx-react";
 import { KubeResourceChart } from "./KubeResourceChart";
 
 @observer
 export class KubePodChart extends KubeResourceChart {
-
   registerStores() {
     this.kubeObjectStores = [
       this.podsStore,
@@ -15,8 +14,8 @@ export class KubePodChart extends KubeResourceChart {
       this.secretStore,
       this.deploymentStore,
       this.daemonsetStore,
-      this.statefulsetStore
-    ]
+      this.statefulsetStore,
+    ];
   }
 
   generateChartDataSeries = () => {
@@ -26,10 +25,11 @@ export class KubePodChart extends KubeResourceChart {
     this.generatePodNode();
     this.generateIngresses();
 
-    if (nodes.length != this.nodes.length || links.length != this.links.length) { // TODO: Improve the logic
+    if (nodes.length !== this.nodes.length || links.length !== this.links.length) {
+      // TODO: Improve the logic
       this.updateState(this.nodes, this.links);
     }
-  }
+  };
 
   protected generatePodNode() {
     const { object: pod } = this.props;
@@ -45,13 +45,15 @@ export class KubePodChart extends KubeResourceChart {
   }
 
   getControllerObject(pod: Renderer.K8sApi.Pod) {
-    if (pod.getOwnerRefs()[0]?.kind == "StatefulSet") {
+    if (pod.getOwnerRefs()[0]?.kind === "StatefulSet") {
       return this.statefulsetStore.getByName(pod.getOwnerRefs()[0].name, pod.getNs());
-    } else if(pod.getOwnerRefs()[0]?.kind == "DaemonSet") {
+    }
+
+    if (pod.getOwnerRefs()[0]?.kind === "DaemonSet") {
       return this.daemonsetStore.getByName(pod.getOwnerRefs()[0].name, pod.getNs());
     }
     return this.deploymentStore.items.find((deployment) =>
-      deployment.getSelectors().every((label) => pod.getLabels().includes(label))
-    )
+      deployment.getSelectors().every((label) => pod.getLabels().includes(label)),
+    );
   }
 }

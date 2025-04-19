@@ -1,15 +1,15 @@
-import React from 'react';
+import type React from "react";
 
 export type ConfigItem = {
   color: string;
   size: number;
-  icon: any; // Changed to any to accommodate webpack imports
-  tooltipClass?: any;
-}
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>> | string; // Icon can be an SVG React component or URL string
+  tooltipClass?: React.ComponentType;
+};
 
 type Config = {
-  [key:string]: ConfigItem;
-}
+  [key: string]: ConfigItem;
+};
 
 // Use image URLs for Kubernetes resources
 export const config: Config = {
@@ -62,5 +62,5 @@ export const config: Config = {
     color: "#cdff93",
     icon: "https://raw.githubusercontent.com/kubernetes/community/master/icons/svg/resources/unlabeled/pvc.svg",
     size: 22,
-  }
-}
+  },
+};

@@ -1,10 +1,9 @@
-import { Renderer } from "@freelensapp/extensions";
+import type { Renderer } from "@freelensapp/extensions";
 import { observer } from "mobx-react";
 import { KubeResourceChart } from "./KubeResourceChart";
 
 @observer
 export class KubeServiceChart extends KubeResourceChart {
-
   registerStores() {
     this.kubeObjectStores = [
       this.podsStore,
@@ -15,8 +14,8 @@ export class KubeServiceChart extends KubeResourceChart {
       this.secretStore,
       this.deploymentStore,
       this.daemonsetStore,
-      this.statefulsetStore
-    ]
+      this.statefulsetStore,
+    ];
   }
 
   generateChartDataSeries = () => {
@@ -30,39 +29,55 @@ export class KubeServiceChart extends KubeResourceChart {
     this.generateNode(service);
 
     if (selector) {
-        this.podsStore.getAllByNs(service.getNs()).filter((item: Renderer.K8sApi.Pod) => {
-        const itemLabels = item.metadata.labels || {};
-        return Object.entries(selector)
-          .every(([key, value]) => {
-            return itemLabels[key] === value
+      const filteredPods = this.podsStore
+        .getAllByNs(service.getNs())
+        .filter((item: Renderer.K8sApi.Pod) => {
+          const itemLabels = item.metadata.labels || {};
+          return Object.entries(selector).every(([key, value]) => {
+            return itemLabels[key] === value;
           });
-      }).forEach((pod: Renderer.K8sApi.Pod) => this.generatePodNode(pod));
+        });
+
+      for (const pod of filteredPods) {
+        this.generatePodNode(pod);
+      }
     }
 
     this.generateIngresses();
 
-    if (nodes.length != this.nodes.length || links.length != this.links.length) { // TODO: Improve the logic
+    if (nodes.length !== this.nodes.length || links.length !== this.links.length) {
+      // TODO: Improve the logic
       this.updateState(this.nodes, this.links);
     }
-  }
+  };
 
   protected generateIngresses() {
     const { ingressStore } = this;
-    const { object: service} = this.props;
+    const { object: service } = this.props;
 
+    const ingresses = ingressStore.getAllByNs(service.getNs());
+    for (const ingress of ingresses) {
+      for (const rule of ingress.spec.rules) {
+        if (rule.http?.paths) {
+          for (const path of rule.http.paths) {
+            // Define a more specific type for the backend
+            const backend = path.backend as {
+              serviceName?: string;
+              service?: { name: string };
+            };
 
-    ingressStore.getAllByNs(service.getNs()).forEach((ingress: Renderer.K8sApi.Ingress) => {
-
-      ingress.spec.rules.forEach((rule: { host?: string; http?: { paths: Array<{ path?: string; backend: any }> } }) => {
-        rule.http.paths.forEach((path: { path?: string; backend: any }) => {
-          if((path.backend as any).serviceName == service.getName() || (path.backend as any).service.name == service.getName()) {
-            const serviceNode = this.generateNode(service);
-            const ingressNode = this.getIngressNode(ingress);
-            this.addLink({ source: ingressNode.id, target: serviceNode.id });
+            if (
+              backend.serviceName === service.getName() ||
+              backend.service?.name === service.getName()
+            ) {
+              const serviceNode = this.generateNode(service);
+              const ingressNode = this.getIngressNode(ingress);
+              this.addLink({ source: ingressNode.id, target: serviceNode.id });
+            }
           }
-        })
-      })
-    })
+        }
+      }
+    }
   }
 
   protected generatePodNode(pod: Renderer.K8sApi.Pod) {
@@ -77,13 +92,15 @@ export class KubeServiceChart extends KubeResourceChart {
   }
 
   getControllerObject(pod: Renderer.K8sApi.Pod) {
-    if (pod.getOwnerRefs()[0]?.kind == "StatefulSet") {
+    if (pod.getOwnerRefs()[0]?.kind === "StatefulSet") {
       return this.statefulsetStore.getByName(pod.getOwnerRefs()[0].name, pod.getNs());
-    } else if(pod.getOwnerRefs()[0]?.kind == "DaemonSet") {
+    }
+
+    if (pod.getOwnerRefs()[0]?.kind === "DaemonSet") {
       return this.daemonsetStore.getByName(pod.getOwnerRefs()[0].name, pod.getNs());
     }
     return this.deploymentStore.items.find((deployment: Renderer.K8sApi.Deployment) =>
-      deployment.getSelectors().every((label: string) => pod.getLabels().includes(label))
-    )
+      deployment.getSelectors().every((label: string) => pod.getLabels().includes(label)),
+    );
   }
 }

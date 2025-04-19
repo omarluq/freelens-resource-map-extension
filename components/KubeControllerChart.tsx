@@ -4,7 +4,6 @@ import { KubeResourceChart } from "./KubeResourceChart";
 
 @observer
 export class KubeControllerChart extends KubeResourceChart {
-
   registerStores() {
     this.kubeObjectStores = [
       this.podsStore,
@@ -15,8 +14,8 @@ export class KubeControllerChart extends KubeResourceChart {
       this.secretStore,
       this.deploymentStore,
       this.daemonsetStore,
-      this.statefulsetStore
-    ]
+      this.statefulsetStore,
+    ];
   }
 
   generateChartDataSeries = () => {
@@ -26,8 +25,9 @@ export class KubeControllerChart extends KubeResourceChart {
     this.generateControllerNode(this.props.object);
     this.generateIngresses();
 
-    if (nodes.length != this.nodes.length || links.length != this.links.length) { // TODO: Improve the logic
+    if (nodes.length !== this.nodes.length || links.length !== this.links.length) {
+      // TODO: Improve the logic
       this.updateState(this.nodes, this.links);
     }
-  }
+  };
 }

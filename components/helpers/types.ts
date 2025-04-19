@@ -1,5 +1,5 @@
-import { Renderer } from "@freelensapp/extensions";
-import React from 'react';
+import type { Renderer } from "@freelensapp/extensions";
+import type React from "react";
 
 export type NodeObject = object & {
   id?: string;
@@ -15,8 +15,8 @@ export type NodeObject = object & {
 };
 
 export type LinkObject = object & {
-  source?: string|NodeObject;
-  target?: string|NodeObject;
+  source?: string | NodeObject;
+  target?: string | NodeObject;
 };
 
 export interface ChartDataSeries extends NodeObject {

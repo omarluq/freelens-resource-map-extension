@@ -10,23 +10,16 @@
     "node": ">=22.0.0",
     "freelens": "^1.2.0"
   },
-  "keywords": [
-    "lens",
-    "extension",
-    "k8slens",
-    "kubernetes"
-  ],
-  "files": [
-    "dist/"
-  ],
+  "keywords": ["lens", "extension", "k8slens", "kubernetes"],
+  "files": ["dist/"],
   "updateSource": "github|npmjs",
   "scripts": {
     "start": "webpack --watch",
     "build": "rm -rf ./dist && webpack",
     "clean": "rm -rf ./dist",
     "test": "jest",
-    "lint": "biome check .",
-    "lint:fix": "biome check --apply ."
+    "format": " pnpm biome format . --write",
+    "lint": "pnpm biome lint . --apply"
   },
   "jest": {
     "runner": "@jest-runner/electron",

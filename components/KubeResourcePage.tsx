@@ -1,7 +1,7 @@
-import "./KubeResourcePage.scss"
+import "./KubeResourcePage.scss";
 import React from "react";
 import { Common, Renderer } from "@freelensapp/extensions";
-import { KubeForceChart } from "./KubeForceChart"
+import { KubeForceChart } from "./KubeForceChart";
 import { KubeResourceChartLegend } from "./KubeResourceChartLegend";
 
 export class KubeResourcePage extends React.Component {
@@ -11,10 +11,10 @@ export class KubeResourcePage extends React.Component {
         <header className="flex gaps align-center">
           <h2 className="flex gaps align-center">
             <span>Resource Map</span>
-            <Renderer.Component.Icon material="info" tooltip={<KubeResourceChartLegend/>}/>
+            <Renderer.Component.Icon material="info" tooltip={<KubeResourceChartLegend />} />
           </h2>
           <div className="box right">
-          <Renderer.Component.NamespaceSelectFilter />
+            <Renderer.Component.NamespaceSelectFilter />
           </div>
         </header>
         <KubeForceChart />

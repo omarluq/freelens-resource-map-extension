@@ -1,4 +1,4 @@
-import { Renderer, Common } from "@freelensapp/extensions";
+import { Common, Renderer } from "@freelensapp/extensions";
 import React from "react";
 
 export interface DefaultTooltipProps {
@@ -7,32 +7,37 @@ export interface DefaultTooltipProps {
 
 export class DefaultTooltip extends React.Component<DefaultTooltipProps> {
   render() {
-    const obj = this.props.obj
+    const obj = this.props.obj;
     return (
       <div className="KubeResourceChartTooltip flex column">
         <div>
-          <b>{obj.kind} - {obj.getName()}</b>
+          <b>
+            {obj.kind} - {obj.getName()}
+          </b>
         </div>
-        <hr/>
+        <hr />
         <Renderer.Component.DrawerItem name="Namespace">
           {obj.getNs()}
         </Renderer.Component.DrawerItem>
         <Renderer.Component.DrawerItem name="Created">
-           { obj.metadata.creationTimestamp && `${obj.getAge()} ago`}
+          {obj.metadata.creationTimestamp && `${obj.getAge()} ago`}
         </Renderer.Component.DrawerItem>
       </div>
-    )
+    );
   }
 
   renderContainersStatus(pod: Renderer.K8sApi.Pod) {
-    return pod.getContainerStatuses().map((containerStatus: Renderer.K8sApi.IPodContainerStatus) => {
-      const { name, state, ready } = containerStatus;
+    return pod
+      .getContainerStatuses()
+      .map((containerStatus: Renderer.K8sApi.IPodContainerStatus) => {
+        const { name, state, ready } = containerStatus;
 
-      return (
-        <div key={name}>
-          <Renderer.Component.StatusBrick className={Common.Util.cssNames(state, { ready })}/> {name}
-        </div>
-      );
-    });
+        return (
+          <div key={name}>
+            <Renderer.Component.StatusBrick className={Common.Util.cssNames(state, { ready })} />{" "}
+            {name}
+          </div>
+        );
+      });
   }
 }
