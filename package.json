@@ -43,8 +43,8 @@
     "@types/d3-force": "^3.0.10",
     "@types/jest": "^29.5.14",
     "@types/node": "^22.14.1",
-    "@types/react": "^17.0.85",
-    "@types/react-dom": "^17.0.26",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "@types/vis": "^4.21.27",
     "babel-loader": "^10.0.0",
     "css-loader": "^7.1.2",
@@ -75,7 +75,7 @@
     "@freelensapp/kube-object": "^1.2.0",
     "mobx": "^6.13.7",
     "mobx-react": "^7.6.0 || ^9.0.0",
-    "react": "^17.0.2",
-    "react-dom": "^17.0.2"
+    "react": "^17.0.2 || ^19.0.0",
+    "react-dom": "^17.0.2 || ^19.0.0"
   }
 }
